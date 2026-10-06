@@ -181,6 +181,28 @@ installs no forwarding hooks. Existing-flow cutoff, both
 directions, guarded return traffic, binding loss/IP reuse, baseline drift and
 translator mapping changes remain activation gates.
 
+## Packet-field qualification
+
+A separate test-only fixture routes raw UDP packets between two virtual links
+inside the empty container namespace. Only the router ends have IP addresses;
+endpoint packet taps observe delivery before fixture-only ingress drops prevent
+recirculation. All identities and networks are synthetic. Cleanup deletes only
+the fixture's tables and links. No production executable can call its helpers.
+
+Both IPv4 and IPv6 tests cover peer/device initiation and correlated replies.
+Counters prove that inbound `inet forward` sees the ingress router MAC, not the
+device's destination MAC. Final `netdev egress` sees that device MAC. Forward-hook
+connection direction, state and original destination port are available, and a
+packet mark reaches egress. The selected build rejected direct egress conntrack
+queries during qualification; a guarded backend must not depend on them.
+
+After an earlier forward accept, an egress MAC drop blocks an existing flow, a
+new flow and an unqualified address on the same device. This does not establish
+lease-based authorization, protected-floor ordering, spoof resistance, mapping
+coordination or translated return identity. The fixture's broad accepts and
+marks are observations, not deployable policy. The final backend still needs
+independently checked mark ownership/reset and atomic guard/lease updates.
+
 ## Verification
 
 `make integration` exercises actual Unix sockets and, in an isolated root runner,

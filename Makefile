@@ -18,10 +18,11 @@ test:
 integration:
 	$(GO) test -race -shuffle=on -count=1 -tags integration -coverprofile=coverage.out ./...
 
-## kernel: Qualify nftables updates in an isolated disposable container (never host networking)
+## kernel: Qualify nftables updates and routed packet fields in an isolated disposable container
 kernel:
 	$(CONTAINER) build --file packaging/Containerfile.kernel --tag $(KERNEL_TEST_IMAGE) packaging
-	$(CONTAINER) run --rm --network none --cap-drop ALL --cap-add NET_ADMIN \
+	$(CONTAINER) run --rm --network none --cap-drop ALL --cap-add NET_ADMIN --cap-add NET_RAW \
+		--sysctl net.ipv4.ip_forward=1 --sysctl net.ipv6.conf.all.forwarding=1 \
 		--security-opt no-new-privileges \
 		--env ROUTER_POLICY_KERNEL_TEST=isolated \
 		--mount type=bind,src="$(CURDIR)",dst=/workspace,readonly \
