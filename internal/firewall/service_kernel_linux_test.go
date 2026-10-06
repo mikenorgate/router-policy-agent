@@ -508,6 +508,12 @@ func TestGuardedServiceReaderProcess(t *testing.T) {
 	receipt, err := ipc.Submit(t.Context(), ipc.ClientOptions{
 		Socket: os.Getenv("RPA_SERVICE_TEST_SOCKET"), ServerUID: 0, Timeout: 10 * time.Second,
 	}, snapshot)
+	if os.Getenv("RPA_SERVICE_TEST_EXPECT") == "rejected" {
+		if !errors.Is(err, ipc.ErrRejected) || receipt.Status != ipc.StatusRejected || receipt.GrantCount != 0 {
+			t.Fatal("synthetic service did not return an explicit zero-grant rejection")
+		}
+		return
+	}
 	if err != nil || receipt.Status != ipc.StatusApplied || receipt.BaselineHash != os.Getenv("RPA_SERVICE_TEST_BASELINE") {
 		t.Fatalf("synthetic service submission failed: %v", err)
 	}

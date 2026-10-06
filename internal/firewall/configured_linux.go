@@ -29,9 +29,20 @@ type configuredOptions struct {
 // lifetime. It never creates/unlinks socket paths, initializes missing history,
 // learns expected pins, installs guard schemas or accepts a clock override.
 // It remains private pending real source, boot, release and path qualification.
-func runConfiguredService(ctx context.Context, options configuredOptions) (result error) {
+func runConfiguredService(ctx context.Context, options configuredOptions) error {
+	return runConfiguredWithClock(ctx, options, kernelUTC)
+}
+
+// The configured entry point fixes kernelUTC above. This lower-level assembler
+// accepts a trusted clock dependency for isolated tests, never serialized input.
+func runConfiguredWithClock(
+	ctx context.Context,
+	options configuredOptions,
+	clock func() time.Time,
+) (result error) {
 	validListeners := options.requests != nil && options.status != nil && options.requests != options.status
-	if ctx == nil || options.bindings == nil || !validListeners {
+	validDependencies := ctx != nil && options.bindings != nil && clock != nil
+	if !validDependencies || !validListeners {
 		return errors.New("firewall: incomplete configured helper inputs")
 	}
 	config, err := loadHelperConfig(ctx, options.directory)
@@ -43,7 +54,12 @@ func runConfiguredService(ctx context.Context, options configuredOptions) (resul
 	if !validRequests || !validStatus {
 		return errors.New("firewall: supervisor listeners differ from helper configuration")
 	}
-	resources, err := openConfiguredResources(ctx, config, options.bindings)
+	resources, err := openConfiguredWithClock(
+		ctx,
+		config,
+		options.bindings,
+		clock,
+	)
 	if err != nil {
 		return err
 	}
@@ -99,8 +115,23 @@ func openConfiguredResources(
 	ctx context.Context,
 	config helperConfig,
 	bindings func(context.Context) (binding.Snapshot, error),
+) (*configuredResources, error) {
+	return openConfiguredWithClock(
+		ctx,
+		config,
+		bindings,
+		kernelUTC,
+	)
+}
+
+func openConfiguredWithClock(
+	ctx context.Context,
+	config helperConfig,
+	bindings func(context.Context) (binding.Snapshot, error),
+	clock func() time.Time,
 ) (resources *configuredResources, result error) {
-	if ctx == nil || bindings == nil || os.Geteuid() != 0 {
+	validDependencies := ctx != nil && bindings != nil && clock != nil
+	if !validDependencies || os.Geteuid() != 0 {
 		return nil, errors.New("firewall: invalid configured resource owner or inputs")
 	}
 	if err := config.validate(); err != nil {
@@ -134,7 +165,7 @@ func openConfiguredResources(
 	}
 	backend, err := newGuardedBackend(backendOptions{
 		profile: profile, executor: r.executor, generation: r.gate,
-		expected: config.ExpectedGeneration, clock: time.Now,
+		expected: config.ExpectedGeneration, clock: clock,
 	})
 	if err != nil {
 		return nil, err

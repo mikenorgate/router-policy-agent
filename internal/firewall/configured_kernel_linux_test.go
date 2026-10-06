@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -74,6 +75,15 @@ func configuredKernelOptions(
 }
 
 func TestKernelGuardedServiceConfiguredSupervision(t *testing.T) {
+	for _, name := range []string{"listener failure", "clock loss"} {
+		t.Run(name, func(t *testing.T) {
+			configuredSupervisionFixture(t, name)
+		})
+	}
+}
+
+func configuredSupervisionFixture(t *testing.T, name string) {
+	t.Helper()
 	requireKernelIsolation(t)
 	t.Cleanup(func() { requireKernelIsolation(t) })
 	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
@@ -99,9 +109,23 @@ func TestKernelGuardedServiceConfiguredSupervision(t *testing.T) {
 	result := make(chan error, 1)
 	exited := make(chan struct{})
 	var worker sync.WaitGroup
+	var unsafeClock atomic.Bool
+	// Controlled kernel-clock projection: packet qualification must not depend
+	// on the CI host's NTP daemon or modify its clock. The actual read-only query
+	// is exercised separately, including rejection of unsafe observations.
+	clock := func() time.Time {
+		now := time.Now()
+		reading := kernelClockReading{
+			seconds: now.Unix(), fraction: int64(now.Nanosecond()), status: kernelStatusNano,
+		}
+		if unsafeClock.Load() {
+			reading.state = 5
+		}
+		return decodeKernelUTC(reading)
+	}
 	worker.Go(func() {
 		defer close(exited)
-		result <- runConfiguredService(serveCtx, options)
+		result <- runConfiguredWithClock(serveCtx, options, clock)
 	})
 	finish := sync.OnceValue(func() error {
 		worker.Wait()
@@ -154,6 +178,52 @@ func TestKernelGuardedServiceConfiguredSupervision(t *testing.T) {
 		}
 	}
 	traffic(true)
+	if name == "clock loss" {
+		config, err := loadHelperConfig(ctx, options.directory)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before, err := os.ReadFile(filepath.Join(config.StateDir, "state.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		saved, err := state.Decode(before)
+		if err != nil {
+			t.Fatal(err)
+		}
+		expectedHistory, err := state.Classifiers(saved)
+		if err != nil {
+			t.Fatal(err)
+		}
+		bothFamilies := len(expectedHistory.IPv4) != 0 && len(expectedHistory.IPv6) != 0
+		if !bothFamilies || len(expectedHistory.MACs) != 1 {
+			t.Fatal("successful transaction did not persist the fixture's managed bindings")
+		}
+		unsafeClock.Store(true)
+		fresh := backendInputFixture(t, 0)
+		serviceReaderSubmit(
+			ctx,
+			t,
+			executable,
+			options.requests.Addr().String(),
+			backend.options.profile.renderer.compiler.BaselineHash(),
+			fresh.Directory,
+			"rejected",
+		)
+		traffic(false)
+		assertClassifiedGuardInventory(
+			ctx,
+			t,
+			backend.options.executor,
+			backend.options.profile.layout,
+			expectedHistory,
+			false,
+		)
+		after, err := os.ReadFile(filepath.Join(config.StateDir, "state.json"))
+		if err != nil || !bytes.Equal(before, after) {
+			t.Fatal("rejected unsafe-clock request changed durable authorization history")
+		}
+	}
 	// Status-listener failure must stop the writer and seal leases before the
 	// owning runner releases its state lock or backend descriptors.
 	if err := options.status.Close(); err != nil {
@@ -190,6 +260,45 @@ func TestKernelGuardedServiceConfiguredSupervision(t *testing.T) {
 	}
 	if len(document.ClassifiedIPv4) == 0 || len(document.ClassifiedIPv6) == 0 || document.DirectoryHash == "" {
 		t.Fatal("joined cleanup discarded durable deny-only history")
+	}
+}
+
+func TestKernelGuardedServiceConfiguredUnsafeClockStartup(t *testing.T) {
+	requireKernelIsolation(t)
+	t.Cleanup(func() { requireKernelIsolation(t) })
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	backend, writerRoot := setupBackendPacketFixture(ctx, t)
+	options := configuredKernelOptions(
+		ctx,
+		t,
+		backend,
+		writerRoot,
+	)
+	authorization, history := backendAuthorizationFixture(t, backend.options.profile, 0)
+	if err := backend.apply(ctx, authorization, history); err != nil {
+		t.Fatal(err)
+	}
+	assertClassifiedGuardInventory(ctx, t, backend.options.executor, backend.options.profile.layout, history, true)
+	reads := 0
+	options.bindings = func(context.Context) (binding.Snapshot, error) {
+		reads++
+		return binding.Snapshot{}, nil
+	}
+	clock := func() time.Time {
+		return readKernelUTC(func(reading *syscall.Timex) (int, error) {
+			reading.Status = 0x0040
+			return 5, nil
+		})
+	}
+	if err := runConfiguredWithClock(ctx, options, clock); err == nil || reads != 0 {
+		t.Fatal("unsafe startup clock admitted service or binding collection")
+	}
+	assertClassifiedGuardInventory(ctx, t, backend.options.executor, backend.options.profile.layout, history, false)
+	for _, listener := range []*net.UnixListener{options.requests, options.status} {
+		if err := listener.SetDeadline(time.Now().Add(time.Second)); !errors.Is(err, net.ErrClosed) {
+			t.Fatal("unsafe startup clock retained an adopted listener")
+		}
 	}
 }
 

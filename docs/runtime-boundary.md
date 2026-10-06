@@ -696,7 +696,8 @@ qualify those properties separately. The expected vector is trusted input, not
 a declaration that the current writer record or translator state is ready.
 
 Resource opening retains the checked executable, writer fence and exclusive
-state lock without executing commands, reading bindings or initializing state.
+state lock without executing commands, sampling time, reading bindings or
+initializing state.
 Partial failure closes previously opened resources. Configuration contains no
 clock override, state-reset option, binding fixture, firewall program or hook
 selection. A separate qualified binding producer remains mandatory.
@@ -713,9 +714,39 @@ Isolated tests run this configuration-to-backend path with real non-root reader
 and operator clients. Native IPv4/IPv6 initiation/reply traffic is permitted
 after a fresh transaction and revoked when the status listener fails, without
 parent cancellation. State remains deny-only and the exclusive lock is released.
+The lower-level test assembler supplies a controlled clock projection; these
+packet tests neither change nor depend on the host's synchronization state.
 These fixtures do not qualify real bindings, release/pin provenance, encrypted
 storage, boot ordering, synchronized time or translated forwarding. No installed
 helper executable or production configuration is supplied yet.
+
+## Linux synchronization check
+
+The configured entry point fixes its clock source to a fresh Linux `adjtimex`
+query with all adjustment fields zero. It never changes clock parameters or
+requests `CAP_SYS_TIME`. No configuration, environment variable or reader input
+can replace this source. See the [Linux API contract](https://man7.org/linux/man-pages/man2/adjtimex.2.html).
+
+Only `TIME_OK` with no unsynchronized, hardware-fault or pending-leap status
+flags supplies a usable UTC sample. Syscall errors and other states return an
+invalid clock. Timestamp fields are range-checked before conversion, including
+the kernel's microsecond/nanosecond resolution flag; invalid fractions are not
+normalized into another second. The engine and renderer reject the invalid
+sample through their existing clock checks.
+
+An unsafe startup sample leaves grants sealed and closes both adopted
+listeners. An unsafe sample during a directory transaction rejects that
+transaction and attempts bounded sealing, retaining deny-only classification.
+Native IPv4/IPv6 packet tests exercise that request-triggered revocation through
+an actual non-root reader. Separate integration tests exercise the real
+read-only kernel query without requiring a synchronized test host.
+
+This is not continuous clock monitoring. A status query stays read-only, and a
+clock failure without another transaction does not immediately remove existing
+permits; their original kernel deadlines still apply. Kernel synchronization
+flags do not identify or authenticate the time reference, establish UTC accuracy,
+or qualify suspend/resume and cold-boot packet ordering. Those checks remain
+activation gates; status reports do not claim they passed.
 
 ## Verification
 

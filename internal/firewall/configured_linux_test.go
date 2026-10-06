@@ -199,8 +199,20 @@ func TestConfiguredHelperRejectsMissingInputsAndCancellation(t *testing.T) {
 	if err := runConfiguredService(missingContext, configuredOptions{}); err == nil {
 		t.Fatal("missing configured helper inputs accepted")
 	}
+	if err := runConfiguredWithClock(t.Context(), configuredOptions{}, nil); err == nil {
+		t.Fatal("missing configured clock dependency accepted")
+	}
 	if resources, err := openConfiguredResources(missingContext, helperConfigFixture(), nil); err == nil || resources != nil {
 		t.Fatal("missing resource inputs accepted")
+	}
+	resources, err := openConfiguredWithClock(
+		t.Context(),
+		helperConfigFixture(),
+		func(context.Context) (binding.Snapshot, error) { return binding.Snapshot{}, nil },
+		nil,
+	)
+	if err == nil || resources != nil {
+		t.Fatal("missing resource clock dependency accepted")
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()

@@ -8,6 +8,11 @@ Router-side policy compilation for directory-managed devices. One placement grou
 
 **Development status:** the compiler, offline checker, UID-checked local transport, durable revocation state, helper transaction engine and restricted nftables update primitives are implemented. A private guarded backend combines pinned profile inspection, the cooperative writer fence, original authorization deadlines and atomic lease replacement/sealing. A single-use service pairs that backend with the durable engine and IPC, restoring deny-only history before accepting requests and sealing on exit. Isolated kernel tests exercise native IPv4/IPv6 permits, failure revocation and expiry during continuous traffic; a separate fixture tests the service through a real non-root client. The durable revoke-before-update coordinator is also tested. This is not yet a deployable firewall agent. Installed helper activation, LDAP collection, independently qualified bindings, release/pin provenance and independently qualified protected-policy projection, actual owning-writer integration and boot restoration, protected packet-path integration and translation tests remain required. See [the implementation gates](docs/architecture.md#implementation-gates).
 
+Configured helper wiring now rejects kernel-reported unsafe synchronization
+through a read-only Linux clock query. Request-triggered clock-loss revocation
+has native packet tests; the actual time reference, accuracy and suspend/resume
+behavior remain unqualified. See [clock checks](docs/runtime-boundary.md#linux-synchronization-check).
+
 ## Getting started
 
 Use Go 1.26 or newer. No external services or root privileges are needed for the compiler tests.

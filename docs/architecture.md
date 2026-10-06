@@ -73,6 +73,13 @@ exercises that complete wiring. It supplies no real binding producer or installe
 helper executable; release authentication, boot ordering and the remaining path
 qualification still apply. See [configuration and ownership](runtime-boundary.md#checked-helper-configuration-and-ownership).
 
+That configured entry point now uses a fixed read-only Linux synchronization
+query instead of an unchecked wall-clock sample. Unsafe kernel states or
+malformed timestamps reject authorization; native packet tests cover startup
+sealing and request-triggered revocation on clock loss. This does not qualify
+the time reference, accuracy, suspend/resume or boot ordering. See the
+[clock check and its limits](runtime-boundary.md#linux-synchronization-check).
+
 The following gates remain before this project can be called a completed runtime:
 
 1. Add verified LDAPS/StartTLS collection with individual group reads, exact active identity, complete bounded paging and collision-safe membership interpretation. There must be no plaintext production fallback.
