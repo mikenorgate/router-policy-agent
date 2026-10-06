@@ -32,6 +32,7 @@ type preparedBatch struct {
 	data        []byte
 	preparedAt  time.Time
 	startBefore time.Time
+	startedAt   time.Time
 }
 
 type change struct {
@@ -63,6 +64,9 @@ func newRenderer(baseline policy.Baseline) (*renderer, error) {
 // retains all known classification and appends only newly classified identities.
 // It does not install the packet guards, qualify bindings or coordinate mappings.
 func (renderer *renderer) prepare(ctx context.Context, input replacement) (*preparedBatch, error) {
+	// Keep an independent monotonic preparation fence. UTC input timestamps
+	// cannot bound elapsed time if the wall clock moves during preparation.
+	startedAt := time.Now()
 	if renderer == nil || ctx == nil {
 		return nil, errors.New("firewall: missing renderer or context")
 	}
@@ -160,6 +164,7 @@ func (renderer *renderer) prepare(ctx context.Context, input replacement) (*prep
 	}
 	return &preparedBatch{
 		data: data, preparedAt: input.now, startBefore: input.now.Add(preparationBudget),
+		startedAt: startedAt,
 	}, nil
 }
 

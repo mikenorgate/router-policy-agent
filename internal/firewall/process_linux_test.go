@@ -47,6 +47,11 @@ func runProcessFixture() int {
 			}
 		}
 		return 0
+	case strings.HasSuffix(name, "nft-inventory"):
+		if err := json.NewEncoder(os.Stdout).Encode(map[string]any{"nftables": listingFixtureObjects()}); err != nil {
+			return 1
+		}
+		return 0
 	}
 	data, err := io.ReadAll(io.LimitReader(os.Stdin, maximumBatch+1))
 	if err != nil {
@@ -200,6 +205,18 @@ func TestPreparedProcessRejectsDelayClockChangesAndUnboundedPrograms(t *testing.
 			b.preparedAt = time.Time{}
 			return b
 		}},
+		{name: "missing monotonic fence", change: func(b *preparedBatch) *preparedBatch {
+			b.startedAt = time.Time{}
+			return b
+		}},
+		{name: "expired monotonic fence with fresh wall metadata", change: func(b *preparedBatch) *preparedBatch {
+			b.startedAt = b.startedAt.Add(-time.Hour)
+			return b
+		}},
+		{name: "future monotonic fence", change: func(b *preparedBatch) *preparedBatch {
+			b.startedAt = b.startedAt.Add(time.Hour)
+			return b
+		}},
 		{name: "extended preparation window", change: func(b *preparedBatch) *preparedBatch {
 			b.startBefore = b.startBefore.Add(time.Hour)
 			return b
@@ -224,16 +241,47 @@ func TestPreparedProcessRejectsDelayClockChangesAndUnboundedPrograms(t *testing.
 			t.Parallel()
 			process, _ := processFixture(t, "nft-fixture")
 			now := time.Now()
-			batch := &preparedBatch{data: clearBatch(t), preparedAt: now, startBefore: now.Add(preparationBudget)}
+			batch := &preparedBatch{
+				data: clearBatch(t), preparedAt: now, startBefore: now.Add(preparationBudget), startedAt: time.Now(),
+			}
 			if err := process.applyPrepared(t.Context(), test.change(batch)); err == nil {
 				t.Fatal("unsafe prepared transaction reached the child")
 			}
 		})
 	}
-	process, _ := processFixture(t, "nft-fixture")
+	process, _ := processFixture(t, "nft-inventory")
 	now := time.Now()
-	batch := &preparedBatch{data: clearBatch(t), preparedAt: now, startBefore: now.Add(preparationBudget)}
+	batch := &preparedBatch{
+		data: clearBatch(t), preparedAt: now, startBefore: now.Add(preparationBudget), startedAt: time.Now(),
+	}
 	if err := process.applyPrepared(t.Context(), batch); err != nil {
 		t.Fatalf("valid prepared transaction rejected: %v", err)
+	}
+}
+
+func TestProcessVerifiesListingBeforeMutation(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"nft-inventory", "nft-fixture", "nft-error"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			process, _ := processFixture(t, name)
+			inventory, err := process.inspectSets(t.Context())
+			if name == "nft-inventory" {
+				if err != nil || inventory == nil || inventory.leases != 1 {
+					t.Fatalf("complete observation rejected: %v", err)
+				}
+				return
+			}
+			if err == nil || inventory != nil {
+				t.Fatal("unverified listing produced an inventory")
+			}
+			now := time.Now()
+			batch := &preparedBatch{
+				data: clearBatch(t), preparedAt: now, startBefore: now.Add(preparationBudget), startedAt: time.Now(),
+			}
+			if err := process.applyPrepared(t.Context(), batch); err == nil {
+				t.Fatal("prepared mutation accepted an unverified listing")
+			}
+		})
 	}
 }

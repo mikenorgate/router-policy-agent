@@ -30,6 +30,9 @@ func TestKernelOwnedTransactionAndElementExpiry(t *testing.T) {
 			t.Error(err)
 		}
 	}()
+	if inventory, err := process.inspectSets(ctx); err != nil || inventory.leases != 0 || len(inventory.cohort) != 0 {
+		t.Fatalf("actual empty inventory rejected: %v", err)
+	}
 	before := kernelFixtureCommand(
 		ctx,
 		t,
@@ -105,6 +108,9 @@ func TestKernelOwnedTransactionAndElementExpiry(t *testing.T) {
 	if err != nil || elementCount(t, data, "lease_to6_tcp") != 1 || elementCount(t, data, cohortSet) != 1 {
 		t.Fatal("typed transaction lost the tuple or permanent classification")
 	}
+	if inventory, err := process.inspectSets(ctx); err != nil || inventory.leases != 1 || len(inventory.cohort) != 1 {
+		t.Fatalf("actual populated inventory rejected: %v", err)
+	}
 	after := kernelFixtureCommand(
 		ctx,
 		t,
@@ -161,6 +167,13 @@ func TestKernelOwnedTransactionAndElementExpiry(t *testing.T) {
 		ownedTable,
 		"lease_from6_tcp",
 	)
+	now = time.Now()
+	rejected := &preparedBatch{
+		data: clearBatch(t), preparedAt: now, startBefore: now.Add(preparationBudget), startedAt: time.Now(),
+	}
+	if err := process.applyPrepared(ctx, rejected); err == nil {
+		t.Fatal("schema drift did not stop a prepared replacement")
+	}
 	if _, err := process.execute(ctx, applyOwned, clearBatch(t)); err == nil {
 		t.Fatal("missing-owned-object transaction falsely succeeded")
 	}

@@ -13,6 +13,8 @@ import (
 const (
 	cohortSet              = "managed_macs"
 	maximumElementLifetime = 87
+	maximumCohortSize      = 4096
+	maximumTupleCount      = 16384
 )
 
 var interfaceName = regexp.MustCompile(`^[a-zA-Z0-9_.:-]{1,15}$`)
@@ -113,7 +115,7 @@ func validateBatch(data []byte) error {
 		}
 		added[ref.Name] = true
 		if ref.Name == cohortSet {
-			if len(added) != 1 || len(values.Values) > 4096 {
+			if len(added) != 1 || len(values.Values) > maximumCohortSize {
 				return errors.New("firewall: cohort must precede grants and respect quota")
 			}
 			if err := validateMACs(values.Values); err != nil {
@@ -125,7 +127,7 @@ func validateBatch(data []byte) error {
 			return errors.New("firewall: element outside owned sets")
 		}
 		tupleCount += len(values.Values)
-		if tupleCount > 16384 {
+		if tupleCount > maximumTupleCount {
 			return errors.New("firewall: expanded tuple quota exceeded")
 		}
 		seen := map[tupleKey]bool{}
@@ -224,8 +226,12 @@ func validateLeasedTuple(raw json.RawMessage, ipv4 bool) (tupleKey, error) {
 	if element.Timeout < 1 || element.Timeout > maximumElementLifetime {
 		return tupleKey{}, errors.New("firewall: invalid bounded element lifetime")
 	}
+	return validateTuple(element.Value, ipv4)
+}
+
+func validateTuple(value json.RawMessage, ipv4 bool) (tupleKey, error) {
 	if err := strictjson.Object(
-		element.Value,
+		value,
 		[]string{"concat"},
 		nil,
 		maximumBatch,
@@ -235,7 +241,7 @@ func validateLeasedTuple(raw json.RawMessage, ipv4 bool) (tupleKey, error) {
 	var tuple struct {
 		Values []json.RawMessage `json:"concat"`
 	}
-	if err := strictjson.Decode(element.Value, &tuple, maximumBatch); err != nil || len(tuple.Values) != 5 {
+	if err := strictjson.Decode(value, &tuple, maximumBatch); err != nil || len(tuple.Values) != 5 {
 		return tupleKey{}, errors.New("firewall: exact five-field tuple required")
 	}
 	fields := make([]string, 4)

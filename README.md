@@ -6,7 +6,7 @@
 
 Router-side policy compilation for directory-managed devices. One placement group selects a reviewed VLAN role; access groups contribute exact application permissions without granting control over the router's protected policy.
 
-**Development status:** the compiler, offline checker, UID-checked local transport, durable revocation state, helper transaction engine and restricted nftables update primitives are implemented. This is not yet a deployable firewall agent. Executable wiring, LDAP collection, independently qualified bindings, persistent packet guards, owned-object verification and packet-level translation tests remain required. See [the implementation gates](docs/architecture.md#implementation-gates).
+**Development status:** the compiler, offline checker, UID-checked local transport, durable revocation state, helper transaction engine and restricted nftables update primitives are implemented, including strict set-schema checks before prepared mutations. This is not yet a deployable firewall agent. Executable wiring, LDAP collection, independently qualified bindings, persistent packet guards, immutable packet-path verification and packet-level translation tests remain required. See [the implementation gates](docs/architecture.md#implementation-gates).
 
 ## Getting started
 

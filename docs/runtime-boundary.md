@@ -99,9 +99,25 @@ Reader IPC still accepts raw directory snapshots, never candidate grants.
 Only eight fixed lease sets in `inet router_policy_agent` can be replaced. The
 permanent `managed_macs` set can receive new canonical identities, never a flush
 or removal. A transaction cannot change tables, chains, rules, hooks, maps,
-routes or includes. Missing objects fail the complete transaction. Independently
-verifying those objects, their schemas and the packet guard remains required;
-the renderer's existing-cohort input is not itself a kernel observation.
+routes or includes. Missing objects fail the complete transaction. The renderer's
+existing-cohort input is not itself a kernel observation.
+
+Before a prepared mutation, the executor reads and strictly verifies the complete
+set-only table. It requires the selected library/schema, positive distinct set
+handles, fixed datatypes/capacities and timeout-only lease sets. Permanent cohort
+elements cannot carry a timeout. Unknown objects/fields, missing or duplicate
+sets, malformed or excessive leases, and grants outside the permanent cohort
+reject the observation without returning partial classification. A replacement
+can use an existing classified identity or append it in the same atomic update;
+the combined permanent cohort must still fit the fixed capacity.
+
+Inspection and mutation share the executor's local gate. This does not fence
+another privileged writer or verify immutable rules, hooks and protected paths.
+The current verifier rejects chains in this set-only table: the final guarded
+table needs a separately reviewed chain/rule schema, not an exception allowing
+arbitrary objects. Library metadata checks establish format compatibility, not
+release authenticity. The owning signed image and packet-path auditor remain
+required.
 
 Each tuple contains interface, MAC, device address, peer address and destination
 port. Direction, family and TCP/UDP protocol select the fixed set. The selected
@@ -113,15 +129,25 @@ an enforcement mechanism.
 Rendering retains every compatible native/NAT counterpart and unions overlapping
 tuple deadlines. Timeout values use JSON seconds, rounded down after subtracting
 two seconds for preparation and 2.25 seconds for execution/cleanup. A batch must
-start inside that preparation window, checked after queueing and validation.
+start inside that preparation window, checked after queueing, inspection and
+validation. A private monotonic reading captured before rendering bounds elapsed
+preparation independently of UTC metadata; the wall-clock window is also checked.
+UTC conversion strips Go's monotonic reading, so UTC metadata alone is not that
+elapsed-time fence ([Go time documentation](https://pkg.go.dev/time#hdr-Monotonic_Clocks)).
 Expired preparations or backward clocks reject; insufficient remaining lifetime
 rejects the entire replacement. A 90-second fresh grant therefore gets at most
 85 seconds in this renderer. The deployed kernel's timeout resolution and maximum
 transaction latency still need qualification before activation.
 
+This preparation fence does not attest whole-service clock synchronization or
+cross-request directory lease age. Clock discontinuities between fresh reads,
+snapshot replay after a clock change and restart still need independent runtime
+qualification; a UTC timestamp alone cannot establish elapsed authorization age.
+
 `make kernel` runs real set operations in an isolated container. Tests verify
-typed compiler output, element expiry with permanent cohort retention, failed
-transaction rollback and unchanged unrelated objects. These are not packet
+typed compiler output, actual empty/populated schema inspection, element expiry
+with permanent cohort retention, schema-drift rejection before prepared mutation,
+failed transaction rollback and unchanged unrelated objects. These are not packet
 tests: the fixture installs no forwarding hooks. Existing-flow cutoff, both
 directions, guarded return traffic, binding loss/IP reuse, baseline drift and
 translator mapping changes remain activation gates.

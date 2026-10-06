@@ -79,6 +79,21 @@ func (process *process) execute(ctx context.Context, op operation, payload []byt
 	return process.run(ctx, commandInput{op: op, payload: payload})
 }
 
+// inspectSets reads fixed owned objects and verifies their schema while holding
+// the executor gate. This is not proof of the baseline's immutable packet paths
+// or a transaction fence against another privileged firewall writer.
+func (process *process) inspectSets(ctx context.Context) (*setInventory, error) {
+	if err := process.acquire(ctx); err != nil {
+		return nil, err
+	}
+	defer process.release()
+	data, err := process.run(ctx, commandInput{op: inspectOwned})
+	if err != nil {
+		return nil, err
+	}
+	return verifySetInventory(ctx, data)
+}
+
 // applyPrepared checks the preparation window after acquiring the command gate.
 // Queueing, slow rendering or a backward clock cannot restart an absolute lease.
 func (process *process) applyPrepared(ctx context.Context, batch *preparedBatch) error {
@@ -86,12 +101,50 @@ func (process *process) applyPrepared(ctx context.Context, batch *preparedBatch)
 		return err
 	}
 	defer process.release()
-	if batch == nil || batch.preparedAt.IsZero() ||
-		batch.startBefore != batch.preparedAt.Add(preparationBudget) {
+	if err := checkPreparation(batch); err != nil {
+		return err
+	}
+	if err := validateBatch(batch.data); err != nil {
+		return err
+	}
+	// Schema checks precede mutation under the same local executor gate. Another
+	// privileged writer still needs an independently coordinated baseline fence;
+	// this observation is not an atomic kernel-generation or packet-path proof.
+	data, err := process.run(ctx, commandInput{op: inspectOwned})
+	if err != nil {
+		return err
+	}
+	inventory, err := verifySetInventory(ctx, data)
+	if err != nil {
+		return err
+	}
+	if err := inventory.checkReplacement(ctx, batch.data); err != nil {
+		return err
+	}
+	_, err = process.run(ctx, commandInput{op: applyOwned, payload: batch.data, prepared: batch})
+	return err
+}
+
+func checkPreparation(batch *preparedBatch) error {
+	if batch == nil {
+		return errors.New("firewall: missing prepared transaction")
+	}
+	validClocks := !batch.preparedAt.IsZero() && !batch.startedAt.IsZero()
+	validWindow := batch.startBefore.Equal(batch.preparedAt.Add(preparationBudget))
+	if !validClocks || !validWindow {
 		return errors.New("firewall: invalid prepared transaction")
 	}
-	_, err := process.run(ctx, commandInput{op: applyOwned, payload: batch.data, prepared: batch})
-	return err
+	now := time.Now()
+	elapsed := now.Sub(batch.startedAt)
+	validElapsed := elapsed >= 0 && elapsed < preparationBudget
+	// Strip monotonic data only for the wall-clock check; Sub above retains the
+	// private time.Now reading captured before rendering began.
+	wallNow := now.Round(0)
+	validWall := !wallNow.Before(batch.preparedAt.Round(0)) && wallNow.Before(batch.startBefore.Round(0))
+	if !validElapsed || !validWall {
+		return errors.New("firewall: prepared transaction expired or clock changed")
+	}
+	return nil
 }
 
 func (process *process) run(ctx context.Context, input commandInput) ([]byte, error) {
@@ -113,9 +166,8 @@ func (process *process) run(ctx context.Context, input commandInput) ([]byte, er
 	defer cancel()
 	// Check after validation and queueing, immediately before starting the child.
 	if input.prepared != nil {
-		now := time.Now()
-		if now.Before(input.prepared.preparedAt) || !now.Before(input.prepared.startBefore) {
-			return nil, errors.New("firewall: prepared transaction expired or clock changed")
+		if err := checkPreparation(input.prepared); err != nil {
+			return nil, err
 		}
 	}
 	// FD 3 is the already checked executable passed through ExtraFiles. A
