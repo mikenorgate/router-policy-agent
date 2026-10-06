@@ -161,6 +161,7 @@ func (compiler *Compiler) Compile(input Input) (Candidate, error) {
 	if err != nil {
 		return Candidate{}, err
 	}
+	ledger.LastValidated = input.Now
 	for id, group := range groups {
 		if ledger.NetworkGroups[id] {
 			group.IsNetwork = true
@@ -360,7 +361,8 @@ func (compiler *Compiler) validBinding(record binding.Record, role Role) bool {
 			continue
 		}
 		for _, address := range record.Addresses {
-			if !validAddress(address.IP) || !inPrefixes(address.IP, zone.Networks) {
+			if !validAddress(address.IP) || !inPrefixes(address.IP, zone.Networks) ||
+				reservedZoneHost(compiler.baseline, address.IP) {
 				return false
 			}
 		}

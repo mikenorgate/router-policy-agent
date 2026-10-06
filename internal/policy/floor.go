@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"encoding/binary"
 	"net/netip"
 	"slices"
 )
@@ -16,6 +17,9 @@ type floorFlow struct {
 
 func (compiler *Compiler) floor(flow floorFlow) string {
 	mac, placement, rule, peer, port := flow.mac, flow.placement, flow.rule, flow.peer, flow.port
+	if reservedZoneHost(compiler.baseline, peer) || reservedZoneHost(compiler.baseline, flow.device) {
+		return "P04_non_host_zone_address"
+	}
 	peerRole := roleFor(compiler.baseline, peer)
 	if placement != Untrusted || peerRole == Security {
 		return "P07_security_router_owned"
@@ -59,4 +63,28 @@ func (compiler *Compiler) floor(flow floorFlow) string {
 		}
 	}
 	return ""
+}
+
+// A /32 alone cannot distinguish a unicast IPv4 host from a directed broadcast.
+// Use the reviewed on-link geometry after alias decoding. /31 point-to-point
+// endpoints and routed NAT46 pools do not have this on-link broadcast rule.
+func reservedZoneHost(baseline Baseline, address netip.Addr) bool {
+	if !address.Is4() {
+		return false
+	}
+	octets := address.As4()
+	value := binary.BigEndian.Uint32(octets[:])
+	for _, zone := range baseline.Zones {
+		for _, prefix := range zone.Networks {
+			if !prefix.Addr().Is4() || prefix.Bits() >= 31 || !prefix.Contains(address) {
+				continue
+			}
+			hostMask := ^uint32(0) >> prefix.Bits()
+			host := value & hostMask
+			if host == 0 || host == hostMask {
+				return true
+			}
+		}
+	}
+	return false
 }

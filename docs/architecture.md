@@ -24,6 +24,8 @@ Group membership is an additive union only after every network group is valid. G
 
 The applier-owned ledger records first-validation times, recognized alias/real-peer anchors, known network group IDs and the last validated clock. It does not persist renewable grants. Restoring old permits after reboot, shifting an alias to a new peer, losing a known group's attribute, or moving a clock backward cannot create new permission.
 
+Durable state also records the managed MAC cohort and the last complete directory snapshot's timestamp/digest. Normal updates cannot shrink that cohort or erase expiry/alias anchors. Older snapshots and conflicting data at the same timestamp reject, including after restart. The filesystem and UID-checked IPC implementations are described in [the runtime boundary contract](runtime-boundary.md); they are not yet wired to a firewall backend.
+
 Address expansion includes both endpoints. NAT64 supports installed `/96` prefixes with an explicit global or private scope. NAT46 needs a ready reviewed map in a reserved alias pool. The same semantic rule covers available representations; the kernel backend still needs proof of original, translated and return identity. A userspace translator does not promise to preserve conntrack marks. A whole translator pool is never a peer substitute.
 
 ## Protected floor
@@ -47,11 +49,11 @@ The compiler directly checks the logical policy restrictions. Packet safety, boo
 
 ## Implementation gates
 
-Current source implements the strict parser, pure compiler, contributor union, temporary-rule/alias ledger, bounded binding envelope and offline checker. The following gates remain before this project can be called a completed runtime:
+Current source implements the strict parser, compiler, contributor union, temporary-rule/alias ledger, bounded binding envelope, offline checker, durable state and credential-checked IPC. The following gates remain before this project can be called a completed runtime:
 
 1. Add verified LDAPS/StartTLS collection with individual group reads, exact active identity, complete bounded paging and collision-safe membership interpretation. There must be no plaintext production fallback.
 2. Qualify an authenticated binding source with actual NAS/VLAN association, DHCP and both-family ownership. Demonstrate roaming, disconnect, unknown privacy addresses, spoof/ambiguity and IP reuse. The JSON fixture is not such a source.
-3. Implement credential-checked IPC, restricted privileged object updates, durable cohort guards and state storage. Boot and failure start with empty application permits while classification remains closed.
+3. Wire the local transport and state into a helper that independently recompiles with its own bindings/configuration/clock. Implement restricted privileged object updates and persistent kernel cohort guards. Boot and failure start with empty application permits while classification remains closed; a persisted MAC list alone does not prove packet classification.
 4. Implement kernel-expiring tuples before every relevant established, DSR and translator shortcut. Prove the later permitting path as well as the early drop; an early accept cannot override a later base-chain drop.
 5. Coordinate mapping generations and original/translated/return identity with the translation owner. Removing or retargeting a map must withdraw the old variants before another endpoint can use them. Do not assume userspace translation preserves conntrack marks.
 6. Run isolated native packet/namespace tests: both families and directions, existing connection expiry, denied aliases, Security ownership, quota/apply failures, reader/helper crashes, boot/clock events and unaffected unrelated flows.

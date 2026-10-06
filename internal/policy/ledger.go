@@ -4,6 +4,7 @@ import (
 	"errors"
 	"maps"
 	"net/netip"
+	"strings"
 	"time"
 )
 
@@ -13,6 +14,31 @@ func copyLedger(ledger Ledger) (Ledger, error) {
 	if ledgerSize(ledger) > maximumLedgerEntries {
 		return Ledger{}, errors.New("policy: durable ledger quota exceeded")
 	}
+	if ledger.LastValidated.IsZero() && ledgerSize(ledger) != 0 {
+		return Ledger{}, errors.New("policy: ledger entries require a validated clock")
+	}
+	for key, first := range ledger.FirstSeen {
+		parts := strings.Split(key, "/")
+		isValidKey := len(parts) == 2 && identifier.MatchString(parts[0]) && identifier.MatchString(parts[1])
+		if !isValidKey || first.IsZero() || first.After(ledger.LastValidated) {
+			return Ledger{}, errors.New("policy: invalid first-validation ledger entry")
+		}
+	}
+	for key, peer := range ledger.AliasPeers {
+		parts := strings.Split(key, "/")
+		isValidKey := len(parts) == 4 && identifier.MatchString(parts[0]) && identifier.MatchString(parts[1])
+		if !isValidKey || !validAddress(peer) {
+			return Ledger{}, errors.New("policy: invalid alias ledger entry")
+		}
+		if _, err := ParseHost(parts[2] + "/" + parts[3]); err != nil {
+			return Ledger{}, errors.New("policy: invalid alias ledger key")
+		}
+	}
+	for id, isNetwork := range ledger.NetworkGroups {
+		if !identifier.MatchString(id) || !isNetwork {
+			return Ledger{}, errors.New("policy: invalid network-group ledger entry")
+		}
+	}
 	firstSeen := map[string]time.Time{}
 	aliases := map[string]netip.Addr{}
 	groups := map[string]bool{}
@@ -20,6 +46,12 @@ func copyLedger(ledger Ledger) (Ledger, error) {
 	maps.Copy(aliases, ledger.AliasPeers)
 	maps.Copy(groups, ledger.NetworkGroups)
 	return Ledger{LastValidated: ledger.LastValidated, FirstSeen: firstSeen, AliasPeers: aliases, NetworkGroups: groups}, nil
+}
+
+// CloneLedger validates and copies durable compiler state without sharing maps.
+// Persisted deadlines and alias anchors are not editable reader inputs.
+func CloneLedger(ledger Ledger) (Ledger, error) {
+	return copyLedger(ledger)
 }
 
 func ruleExpiry(groupID string, rule Rule, input Input, ledger *Ledger, leaseSeconds int) (time.Time, error) {

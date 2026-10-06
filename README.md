@@ -6,7 +6,7 @@
 
 Router-side policy compilation for directory-managed devices. One placement group selects a reviewed VLAN role; access groups contribute exact application permissions without granting control over the router's protected policy.
 
-**Development status:** the pure compiler and offline checker are implemented. This is not yet a deployable firewall agent. LDAP collection, independently qualified binding sources, privileged IPC, persistent packet guards, kernel-expiring permits and packet-level translation tests remain required. See [the implementation gates](docs/architecture.md#implementation-gates).
+**Development status:** the compiler, offline checker, UID-checked local transport and durable revocation state are implemented. This is not yet a deployable firewall agent. Runtime wiring, LDAP collection, independently qualified bindings, persistent packet guards, kernel-expiring permits and packet-level translation tests remain required. See [the implementation gates](docs/architecture.md#implementation-gates).
 
 ## Getting started
 
@@ -66,6 +66,8 @@ See [architecture and remaining gates](docs/architecture.md) and [security respo
 ## Contributing
 
 Run `make check` and `make fuzz`. Keep tests synthetic and do not add deployment addresses or credentials. Changes affecting policy boundaries need rejection and revocation tests as well as successful-flow tests.
+
+`make integration` adds Linux Unix-socket tests. The real cross-UID subprocess case requires an isolated root test runner; it is skipped for an ordinary user. CI runs that case in a pinned Go container. These tests do not change a firewall. See [the runtime boundary contract](docs/runtime-boundary.md).
 
 Repository maintainers should require passing checks and reviewed pull requests in [branch protection](https://github.com/mikenorgate/router-policy-agent/settings/branches), set read-only default tokens and outside-contributor approval in [Actions settings](https://github.com/mikenorgate/router-policy-agent/settings/actions), and keep any future release credentials in [Actions secrets](https://github.com/mikenorgate/router-policy-agent/settings/secrets/actions) behind a reviewed [release environment](https://github.com/mikenorgate/router-policy-agent/settings/environments). The current check workflow requests only `contents: read`; it does not publish releases or need deployment secrets. Workflow files do not configure these repository settings.
 
