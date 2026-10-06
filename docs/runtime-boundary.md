@@ -221,6 +221,35 @@ installs no forwarding hooks. Existing-flow cutoff, both
 directions, guarded return traffic, binding loss/IP reuse, baseline drift and
 translator mapping changes remain activation gates.
 
+## Cooperative writer fence
+
+`hostfs.Fence` pins a private, ownership-checked directory and its empty `.lock`
+file. Each operation acquires both a local gate and an exclusive Linux advisory
+lock. Queueing and the callback share the caller's deadline, capped at two
+seconds; the trusted callback must honor cancellation. The fence rechecks file
+metadata and directory/lock identity before and after the callback. Replacement
+invalidates that fence rather than following a different lock inode. Closing
+does not remove the shared lock file. Integration tests prove separate-process
+exclusion and lock release after the holder is killed.
+
+The privileged generation gate reads only `generation.json` in that checked
+directory. Its bounded, strict schema requires a version, positive sequence,
+canonical floor/mapping hashes and explicit readiness. It checks an exact ready
+generation before and after its callback. Missing, unsafe, closed or mismatched
+metadata prevents the callback from starting. A changed generation cannot renew
+the original authorization or reset a prepared batch's elapsed-time fence.
+
+These primitives are not wired into the executor's mutation path. An advisory
+lock cannot restrain a nonparticipating privileged writer, and a generation
+record cannot attest kernel rules or translator state. The owning writers still
+need a durable transition protocol that withdraws old permits before retargeting
+an alias or replacing protected paths, advances the sequence, and publishes
+readiness only after independent audit. No generation publisher is supplied yet.
+A post-callback error reports drift; it cannot undo an operation that already
+ran. Failure sealing, boot ordering, every privileged writer and the actual
+protected paths must be integrated and qualified before guarded writes activate.
+Deployment paths, hashes and generation records remain private configuration.
+
 ## Packet-field qualification
 
 A separate test-only fixture routes raw UDP packets between two virtual links
