@@ -55,7 +55,7 @@ Current source implements the strict parser, cancellable compiler, contributor u
 
 The private guarded backend now pairs complete ruleset inspection with the cooperative writer fence and original authorization age. It replaces all mirrors atomically, retains deny-only history, seals on failure and verifies a post-commit listing captured under the fence. Actual backend packet tests cover native IPv4/IPv6 initiation and replies, cancellation, invalid authorization, closed generation, external floor drift and expiry despite continuous traffic. A private single-use service connects the backend, durable engine and UID-checked IPC; its isolated non-root-client fixture proves native UDP account-disable revocation and shutdown sealing. The raw set-only executor still cannot accept guarded transactions.
 
-The durable owning-writer coordinator closes readiness, revokes, updates, checks audit hashes and publishes a new sequence; its separate native fixture proves permits are withdrawn before the update callback and are not restored by readiness. These tests do not establish actual writer cooperation or the installed protected floor. Executable configuration and production source integration, actual owning-writer adapters, independent protected-floor verification, closed boot ordering and translated forwarding remain unfinished.
+The durable owning-writer coordinator closes readiness, revokes, updates, checks audit hashes and publishes a new sequence; its separate native fixture proves permits are withdrawn before the update callback and are not restored by readiness. These tests do not establish actual writer cooperation or the installed protected floor. Installed helper activation and production source integration, actual owning-writer adapters, independent protected-floor verification, closed boot ordering and translated forwarding remain unfinished.
 
 A separate read-only status server and Linux client now expose bounded decision
 diagnostics and conservative countdowns, with a fresh fenced kernel inspection.
@@ -64,6 +64,14 @@ read bindings or mutate the firewall; drift/closed generations remain
 `unverified`. Isolated tests exercise a real non-root operator against the
 guarded backend. Service activation, production audit provenance and synchronized
 time remain requirements, not claims made by a successful status query.
+
+Checked private configuration now opens the paired profile, executable, writer
+fence and state store. A configured runner starts the separate reader/operator
+listeners after closed restoration, cancels both when either fails, and joins
+them before sealing and releasing its resources. An isolated native packet test
+exercises that complete wiring. It supplies no real binding producer or installed
+helper executable; release authentication, boot ordering and the remaining path
+qualification still apply. See [configuration and ownership](runtime-boundary.md#checked-helper-configuration-and-ownership).
 
 The following gates remain before this project can be called a completed runtime:
 

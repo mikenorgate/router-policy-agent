@@ -6,7 +6,7 @@
 
 Router-side policy compilation for directory-managed devices. One placement group selects a reviewed VLAN role; access groups contribute exact application permissions without granting control over the router's protected policy.
 
-**Development status:** the compiler, offline checker, UID-checked local transport, durable revocation state, helper transaction engine and restricted nftables update primitives are implemented. A private guarded backend combines pinned profile inspection, the cooperative writer fence, original authorization deadlines and atomic lease replacement/sealing. A single-use service pairs that backend with the durable engine and IPC, restoring deny-only history before accepting requests and sealing on exit. Isolated kernel tests exercise native IPv4/IPv6 permits, failure revocation and expiry during continuous traffic; a separate fixture tests the service through a real non-root client. The durable revoke-before-update coordinator is also tested. This is not yet a deployable firewall agent. Executable configuration, LDAP collection, independently qualified bindings, release/pin provenance and independently qualified protected-policy projection, actual owning-writer integration and boot restoration, protected packet-path integration and translation tests remain required. See [the implementation gates](docs/architecture.md#implementation-gates).
+**Development status:** the compiler, offline checker, UID-checked local transport, durable revocation state, helper transaction engine and restricted nftables update primitives are implemented. A private guarded backend combines pinned profile inspection, the cooperative writer fence, original authorization deadlines and atomic lease replacement/sealing. A single-use service pairs that backend with the durable engine and IPC, restoring deny-only history before accepting requests and sealing on exit. Isolated kernel tests exercise native IPv4/IPv6 permits, failure revocation and expiry during continuous traffic; a separate fixture tests the service through a real non-root client. The durable revoke-before-update coordinator is also tested. This is not yet a deployable firewall agent. Installed helper activation, LDAP collection, independently qualified bindings, release/pin provenance and independently qualified protected-policy projection, actual owning-writer integration and boot restoration, protected packet-path integration and translation tests remain required. See [the implementation gates](docs/architecture.md#implementation-gates).
 
 ## Getting started
 
@@ -38,6 +38,11 @@ and a fresh fenced kernel inspection. Failed inspection reports `unverified`;
 not that its protected-policy semantics or translated paths are qualified.
 JSON goes to stdout and fixed diagnostics to stderr. Exit 0 means a valid report,
 including unhealthy/unverified state; it is not a firewall health verdict.
+
+Private helper wiring now loads checked root-owned configuration and supervises
+the separate reader/operator listeners. Both start after closed restoration and
+stop before backend resources are released. No installed helper or real binding
+producer is supplied yet. See [configuration and ownership](docs/runtime-boundary.md#checked-helper-configuration-and-ownership).
 
 Source installation is also available:
 

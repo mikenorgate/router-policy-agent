@@ -667,6 +667,56 @@ The fixture's bridge is not the production protected-policy projection. Actual
 writer cooperation, authenticated collectors, boot ordering, UTC/suspend and
 translator identity remain unqualified, and executable wiring is still absent.
 
+## Checked helper configuration and ownership
+
+Private helper wiring reads exactly `helper.json` from an explicitly selected
+root-owned private directory. The file must be a bounded regular file, have one
+hard link, and use mode `0400` or `0600`; symlinks, FIFOs and unsafe metadata
+reject. Its schema is strict, including nested objects, required fields, nulls
+and duplicate keys. Nothing is learned from a live listing or an adjacent file.
+
+All configuration fields are required:
+
+| Field | Contract |
+| --- | --- |
+| `schema_version` | Exactly `1` |
+| `profile.directory`, `profile.sha256` | Private profile directory and independently supplied canonical SHA-256 pin |
+| `generation_directory` | Private root for the cooperative writer fence/record |
+| `expected_generation` | Exact schema-1 ready vector: sequence, reviewed floor hash and mapping hash |
+| `state_directory` | Private, encrypted persistent state provisioned by the deployment owner |
+| `nft_executable` | Clean absolute path opened through the checked ELF descriptor loader |
+| `reader_uid`, `operator_uid` | Distinct non-root identities, separately authenticated through kernel peer credentials |
+| `request_timeout_ms` | Integer from `1` through `10000`; no default or timeout extension |
+| `request_socket`, `status_socket` | Distinct clean absolute Unix-stream paths, each at most 107 bytes |
+
+Private resource directories cannot overlap one another or contain either
+socket. Paths cannot contain control characters. File ownership does not
+authenticate an owning release or prove storage encryption; deployment must
+qualify those properties separately. The expected vector is trusted input, not
+a declaration that the current writer record or translator state is ready.
+
+Resource opening retains the checked executable, writer fence and exclusive
+state lock without executing commands, reading bindings or initializing state.
+Partial failure closes previously opened resources. Configuration contains no
+clock override, state-reset option, binding fixture, firewall program or hook
+selection. A separate qualified binding producer remains mandatory.
+
+The configured runner adopts two supervisor-created listeners only when their
+paths match its configuration. Closed startup restores durable classification
+before either server accepts a request. Each server has its own authorized UID;
+failure of either cancels the other. The runner joins both servers, performs
+bounded sealing, closes both descriptors without unlinking their paths, then
+releases its state lock and backend resources. It never creates sockets or
+initializes missing history.
+
+Isolated tests run this configuration-to-backend path with real non-root reader
+and operator clients. Native IPv4/IPv6 initiation/reply traffic is permitted
+after a fresh transaction and revoked when the status listener fails, without
+parent cancellation. State remains deny-only and the exclusive lock is released.
+These fixtures do not qualify real bindings, release/pin provenance, encrypted
+storage, boot ordering, synchronized time or translated forwarding. No installed
+helper executable or production configuration is supplied yet.
+
 ## Verification
 
 `make integration` exercises actual Unix sockets and, in an isolated root runner,

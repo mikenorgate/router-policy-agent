@@ -38,6 +38,12 @@ table netdev backend_endpoints {
 
 func backendPacketProfileFixture(t testing.TB) (*routerProfile, string) {
 	t.Helper()
+	profile, program, _ := backendPacketProfileDataFixture(t)
+	return profile, program
+}
+
+func backendPacketProfileDataFixture(t testing.TB) (*routerProfile, string, []byte) {
+	t.Helper()
 	var artifact struct {
 		Schema  int               `json:"schema_version"`
 		Objects []json.RawMessage `json:"objects"`
@@ -102,7 +108,7 @@ func backendPacketProfileFixture(t testing.TB) (*routerProfile, string) {
 	if program == reviewedKernelFixture || !inserted {
 		t.Fatal("independent backend bridge fixture was not constructed")
 	}
-	return profile, program + backendEndpointProgram
+	return profile, program + backendEndpointProgram, data
 }
 
 func setupBackendPacketFixture(ctx context.Context, t *testing.T) (*guardedBackend, *os.Root) {

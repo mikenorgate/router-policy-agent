@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -79,9 +80,25 @@ func (b *guardedBackend) newService(options serviceOptions) (*guardedService, er
 // canceled startup, with an independent two-second deadline. It never unlinks
 // the supervisor's path, initializes state, creates guards or closes caller-owned
 // dependencies. Rejected concurrent/repeated calls retain their own listeners.
-func (s *guardedService) serve(ctx context.Context, listener *net.UnixListener) (result error) {
+func (s *guardedService) serve(ctx context.Context, listener *net.UnixListener) error {
+	return s.serveListeners(ctx, serviceListeners{requests: listener})
+}
+
+type serviceListeners struct {
+	requests *net.UnixListener
+	status   *net.UnixListener
+	operator *ipc.Server
+}
+
+// serveListeners admits the optional status listener only as a complete,
+// separate pair. Both servers start after deny-only restoration, and are joined
+// before engine sealing/dependency cleanup. Failure of either stops both.
+func (s *guardedService) serveListeners(ctx context.Context, listeners serviceListeners) (result error) {
 	validService := s != nil && s.engine != nil && s.server != nil
-	if !validService || ctx == nil || listener == nil {
+	validStatus := (listeners.status == nil) == (listeners.operator == nil)
+	distinctListeners := listeners.status == nil || listeners.status != listeners.requests
+	validInputs := ctx != nil && listeners.requests != nil
+	if !validService || !validInputs || !validStatus || !distinctListeners {
 		return errors.New("firewall: invalid helper service or listener")
 	}
 	if os.Geteuid() != 0 {
@@ -90,19 +107,53 @@ func (s *guardedService) serve(ctx context.Context, listener *net.UnixListener) 
 	if !s.hasServed.CompareAndSwap(false, true) {
 		return errors.New("firewall: helper service already used")
 	}
-	listener.SetUnlinkOnClose(false)
+	listeners.requests.SetUnlinkOnClose(false)
+	if listeners.status != nil {
+		listeners.status.SetUnlinkOnClose(false)
+	}
 	defer func() {
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 		defer cancel()
 		if err := s.engine.Stop(cleanup); err != nil {
 			result = errors.Join(result, fmt.Errorf("firewall: stop helper service: %w", err))
 		}
-		if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		if err := listeners.requests.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 			result = errors.Join(result, fmt.Errorf("firewall: close helper listener: %w", err))
+		}
+		if listeners.status != nil {
+			if err := listeners.status.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+				result = errors.Join(result, fmt.Errorf("firewall: close status listener: %w", err))
+			}
 		}
 	}()
 	if err := s.engine.Start(ctx); err != nil {
 		return fmt.Errorf("firewall: start helper service: %w", err)
 	}
-	return s.server.Serve(ctx, listener)
+	if listeners.status == nil {
+		return s.server.Serve(ctx, listeners.requests)
+	}
+	return serveHelperPair(ctx,
+		func(ctx context.Context) error { return s.server.Serve(ctx, listeners.requests) },
+		func(ctx context.Context) error { return listeners.operator.Serve(ctx, listeners.status) },
+	)
+}
+
+// Both fixed server functions honor cancellation and join their own I/O
+// interruption callbacks. Two result slots match exactly two workers; sends
+// cannot block during sibling cancellation and no worker survives this call.
+func serveHelperPair(ctx context.Context, requests, status func(context.Context) error) error {
+	if ctx == nil || requests == nil || status == nil {
+		return errors.New("firewall: invalid helper supervision inputs")
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make(chan error, 2)
+	var workers sync.WaitGroup
+	workers.Go(func() { results <- requests(ctx) })
+	workers.Go(func() { results <- status(ctx) })
+	first := <-results
+	cancel()
+	second := <-results
+	workers.Wait()
+	return errors.Join(first, second)
 }
