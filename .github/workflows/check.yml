@@ -1,0 +1,78 @@
+name: Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (Go ${{ matrix.go }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ['1.26.x', stable]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ matrix.go }}
+          cache: false
+      - name: Module integrity
+        run: |
+          go mod verify
+          go mod tidy
+          git diff --exit-code
+      - name: Formatting
+        run: test -z "$(gofmt -l cmd internal)"
+      - name: Build and vet
+        run: |
+          make build
+          make vet
+      - name: Race and shuffled tests
+        run: go test -race -shuffle=on -count=1 -coverprofile=coverage.out ./...
+      - name: Core coverage floor
+        run: |
+          go tool cover -func=coverage.out | awk '/total:/ { sub(/%/, "", $3); if ($3 < 80) exit 1 }'
+      - name: Fuzz properties
+        if: matrix.go == 'stable'
+        run: make fuzz
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache: false
+      - name: Pinned static and security linters
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
+          golangci-lint run ./...
+  security:
+    name: Vulnerability check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache: false
+      - name: Pinned vulnerability scan
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+          govulncheck ./...

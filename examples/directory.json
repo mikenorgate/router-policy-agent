@@ -1,0 +1,21 @@
+{
+  "observed_at": "2026-01-01T12:00:00Z",
+  "complete": true,
+  "groups": [
+    {
+      "id":"placement",
+      "name":"vlan-untrusted",
+      "is_network":true,
+      "policy":"{\"schema_version\":1,\"kind\":\"placement\",\"vlan_role\":\"untrusted\"}"
+    },
+    {
+      "id":"controller-access",
+      "name":"access-device-api",
+      "is_network":true,
+      "policy":"{\"schema_version\":1,\"kind\":\"access\",\"vlan_role\":\"untrusted\",\"temporary\":false,\"rules\":[{\"id\":\"controller-api\",\"direction\":\"to_device\",\"peer\":{\"addresses\":[\"fdca:1a2b::10/128\"]},\"protocol\":\"tcp\",\"destination_ports\":[6053],\"reason\":\"Synthetic controller API\"}]}"
+    }
+  ],
+  "devices": [
+    {"id":"synthetic-device","mac":"02:00:00:00:00:01","active":true,"group_ids":["placement","controller-access"]}
+  ]
+}

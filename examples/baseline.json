@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "generation": "synthetic-v1",
+  "lease_seconds": 90,
+  "refresh_seconds": 30,
+  "maximum_devices": 4096,
+  "maximum_tuples": 16384,
+  "zones": [
+    {"role":"trusted","vlan":10,"interfaces":["lan10"],"networks":["10.240.0.0/24","fdca:1a2b::/64"]},
+    {"role":"guest","vlan":11,"interfaces":["lan11"],"networks":["10.240.1.0/24","fdca:1a2b:1::/64"]},
+    {"role":"infrastructure","vlan":12,"interfaces":["lan12"],"networks":["10.240.2.0/24","fdca:1a2b:2::/64"]},
+    {"role":"untrusted","vlan":13,"interfaces":["lan13"],"networks":["10.240.3.0/24","fdca:1a2b:3::/64"]},
+    {"role":"security","vlan":14,"interfaces":["lan14"],"networks":["10.240.4.0/24","fdca:1a2b:4::/64"]},
+    {"role":"assessment","vlan":15,"interfaces":["lan15"],"networks":["10.240.5.0/24","fdca:1a2b:5::/64"]}
+  ],
+  "protected_networks": [
+    {"protection_id":"P01","networks":["10.241.0.0/24"],"roles":[],"internet_only":false},
+    {"protection_id":"P03","networks":["10.240.2.200/32"],"roles":[],"internet_only":false}
+  ],
+  "protected_endpoints": [
+    {"protection_id":"P02","networks":["10.240.2.254/32"],"protocol":"tcp","ports":[22,443],"destination_only":true}
+  ],
+  "retained_blocks": [],
+  "nat64": [
+    {"id":"global64","prefix":"64:ff9b::/96","scope":"global"},
+    {"id":"private64","prefix":"fdca:1a2b:64::/96","scope":"private"}
+  ],
+  "nat46_pools": ["10.250.0.0/24"],
+  "nat46": [
+    {"id":"app46","alias":"10.250.0.20","target":"fdca:1a2b:2::20","ready":true},
+    {"id":"security46","alias":"10.250.0.40","target":"fdca:1a2b:4::40","ready":true}
+  ]
+}

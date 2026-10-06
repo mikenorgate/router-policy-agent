@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "generation": "synthetic-binding-v1",
+  "observed_at": "2026-01-01T12:00:00Z",
+  "complete": true,
+  "records": [
+    {
+      "mac":"02:00:00:00:00:01",
+      "nas":"synthetic-nas",
+      "interface":"lan13",
+      "vlan":13,
+      "associated_at":"2026-01-01T12:00:00Z",
+      "association_id":"synthetic-session-v1",
+      "addresses":[
+        {
+          "ip":"fdca:1a2b:3::10",
+          "source":"qualified_ipv6",
+          "ownership_id":"synthetic-ownership-v1",
+          "observed_at":"2026-01-01T12:00:00Z",
+          "valid_until":"2026-01-01T13:00:00Z"
+        }
+      ]
+    }
+  ]
+}

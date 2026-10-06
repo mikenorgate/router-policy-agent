@@ -1,0 +1,16 @@
+/bin/
+/dist/
+/coverage.out
+/coverage.html
+*.test
+*.prof
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.pfx
+/secrets/
+/credentials/
+/runtime/
+/local/
