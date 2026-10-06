@@ -43,7 +43,8 @@ Shadow mode rejects firewall dependencies and never calls them.
 Repeating a snapshot cannot restart its directory lease.
 
 The enforce-mode callbacks are a contract for a trusted, restricted backend,
-not an implementation of nftables or proof of kernel revocation. No executable
+not proof of packet revocation. Restricted nftables primitives exist separately;
+the callbacks do not yet wire them into a guarded backend. No executable
 currently wires these components together; qualified binding collection,
 kernel enforcement, translation coordination and packaging remain unfinished.
 
@@ -80,6 +81,50 @@ This durable MAC list still needs a kernel guard and qualified address ownership
 It does not protect incoming traffic or IP reuse by itself. The helper must
 install closed classification before accepting traffic and must persist anchors
 before permitting a new candidate.
+
+## Restricted nftables primitives
+
+`internal/firewall` opens a checked, root-owned ELF executable and invokes its
+pinned descriptor with fixed arguments and a minimal environment. It never
+opens a shell. Output is bounded and drained; raw nftables diagnostics do not
+become errors or IPC receipts. Execution has a two-second deadline and bounded
+pipe cleanup. The owning signed image still has to authenticate the executable
+and its libraries; ownership checks are not release verification.
+
+The private renderer rechecks a helper-compiled candidate's immutable baseline,
+Untrusted geometry, protected floor, complete endpoint variants and contributor
+deadlines. This check does not authenticate directory input or address ownership.
+Reader IPC still accepts raw directory snapshots, never candidate grants.
+
+Only eight fixed lease sets in `inet router_policy_agent` can be replaced. The
+permanent `managed_macs` set can receive new canonical identities, never a flush
+or removal. A transaction cannot change tables, chains, rules, hooks, maps,
+routes or includes. Missing objects fail the complete transaction. Independently
+verifying those objects, their schemas and the packet guard remains required;
+the renderer's existing-cohort input is not itself a kernel observation.
+
+Each tuple contains interface, MAC, device address, peer address and destination
+port. Direction, family and TCP/UDP protocol select the fixed set. The selected
+nftables 1.1.3 build misrepresented the first datatype of a six-field tuple, so
+protocol is separated into immutable set identity. Future matching rules must
+explicitly check the corresponding protocol before lookup; names alone are not
+an enforcement mechanism.
+
+Rendering retains every compatible native/NAT counterpart and unions overlapping
+tuple deadlines. Timeout values use JSON seconds, rounded down after subtracting
+two seconds for preparation and 2.25 seconds for execution/cleanup. A batch must
+start inside that preparation window, checked after queueing and validation.
+Expired preparations or backward clocks reject; insufficient remaining lifetime
+rejects the entire replacement. A 90-second fresh grant therefore gets at most
+85 seconds in this renderer. The deployed kernel's timeout resolution and maximum
+transaction latency still need qualification before activation.
+
+`make kernel` runs real set operations in an isolated container. Tests verify
+typed compiler output, element expiry with permanent cohort retention, failed
+transaction rollback and unchanged unrelated objects. These are not packet
+tests: the fixture installs no forwarding hooks. Existing-flow cutoff, both
+directions, guarded return traffic, binding loss/IP reuse, baseline drift and
+translator mapping changes remain activation gates.
 
 ## Verification
 

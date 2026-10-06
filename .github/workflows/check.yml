@@ -57,7 +57,17 @@ jobs:
       - name: Qualify actual unprivileged peer and durable state
         run: |
           test "$(id -u)" = 0
-          go test -race -shuffle=on -count=1 -tags integration ./internal/ipc ./internal/hostfs ./internal/state
+          go test -race -shuffle=on -count=1 -tags integration ./internal/ipc ./internal/hostfs ./internal/state ./internal/firewall
+  kernel:
+    name: Isolated nftables transactions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Qualify actual kernel expiry and atomic owned updates
+        run: make kernel
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -73,7 +83,7 @@ jobs:
       - name: Pinned static and security linters
         run: |
           go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
-          golangci-lint run --build-tags integration ./...
+          golangci-lint run --build-tags integration,kernel ./...
   security:
     name: Vulnerability check
     runs-on: ubuntu-latest

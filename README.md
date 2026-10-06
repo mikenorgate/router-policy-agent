@@ -6,7 +6,7 @@
 
 Router-side policy compilation for directory-managed devices. One placement group selects a reviewed VLAN role; access groups contribute exact application permissions without granting control over the router's protected policy.
 
-**Development status:** the compiler, offline checker, UID-checked local transport, durable revocation state and helper transaction engine are implemented. This is not yet a deployable firewall agent. Executable wiring, LDAP collection, independently qualified bindings, persistent packet guards, kernel-expiring permits and packet-level translation tests remain required. See [the implementation gates](docs/architecture.md#implementation-gates).
+**Development status:** the compiler, offline checker, UID-checked local transport, durable revocation state, helper transaction engine and restricted nftables update primitives are implemented. This is not yet a deployable firewall agent. Executable wiring, LDAP collection, independently qualified bindings, persistent packet guards, owned-object verification and packet-level translation tests remain required. See [the implementation gates](docs/architecture.md#implementation-gates).
 
 ## Getting started
 
@@ -67,7 +67,9 @@ See [architecture and remaining gates](docs/architecture.md) and [security respo
 
 Run `make check` and `make fuzz`. Keep tests synthetic and do not add deployment addresses or credentials. Changes affecting policy boundaries need rejection and revocation tests as well as successful-flow tests.
 
-`make integration` adds Linux Unix-socket tests. The real cross-UID subprocess case requires an isolated root test runner; it is skipped for an ordinary user. CI runs that case in a pinned Go container. These tests do not change a firewall. See [the runtime boundary contract](docs/runtime-boundary.md).
+`make integration` adds Linux Unix-socket and checked-executable tests. The real cross-UID and root-owned executable cases require an isolated root test runner; they are skipped for an ordinary user. CI runs them in a pinned Go container. These tests do not change a firewall.
+
+`make kernel` builds a test image and runs nftables transaction tests with `NET_ADMIN` inside a disposable, empty network namespace. It mounts only this source tree read-only and builds from the `packaging` directory, not deployment configuration. Do not add host networking, host namespace mounts or `--privileged`. The kernel tests require an explicit test acknowledgement and initially only a loopback interface; they fail rather than skip if isolation or kernel capability is missing. They prove set operations, timeout units and rollback, not packet forwarding. See [the runtime boundary contract](docs/runtime-boundary.md#restricted-nftables-primitives).
 
 Repository maintainers should require passing checks and reviewed pull requests in [branch protection](https://github.com/mikenorgate/router-policy-agent/settings/branches), set read-only default tokens and outside-contributor approval in [Actions settings](https://github.com/mikenorgate/router-policy-agent/settings/actions), and keep any future release credentials in [Actions secrets](https://github.com/mikenorgate/router-policy-agent/settings/secrets/actions) behind a reviewed [release environment](https://github.com/mikenorgate/router-policy-agent/settings/environments). The current check workflow requests only `contents: read`; it does not publish releases or need deployment secrets. Workflow files do not configure these repository settings.
 
