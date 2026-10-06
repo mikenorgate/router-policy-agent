@@ -131,6 +131,10 @@ func verifySetInventory(ctx context.Context, data []byte) (*setInventory, error)
 }
 
 func verifyListingHeader(objects []json.RawMessage) error {
+	return verifyOwnedListingHeader(objects, "inet")
+}
+
+func verifyOwnedListingHeader(objects []json.RawMessage, family string) error {
 	var metadata struct {
 		Version     string `json:"version"`
 		ReleaseName string `json:"release_name"`
@@ -161,7 +165,7 @@ func verifyListingHeader(objects []json.RawMessage) error {
 	); err != nil {
 		return err
 	}
-	if table.Family != "inet" || table.Name != ownedTable || table.Handle == 0 {
+	if table.Family != family || table.Name != ownedTable || table.Handle == 0 {
 		return errors.New("firewall: owned table identity differs")
 	}
 	return nil

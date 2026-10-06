@@ -32,6 +32,7 @@ type operation uint8
 const (
 	inspectOwned operation = iota + 1
 	applyOwned
+	inspectGuardEgress
 )
 
 // process has no public arbitrary-command method. Its descriptor is acquired
@@ -95,6 +96,28 @@ func (process *process) inspectSets(ctx context.Context) (*setInventory, error) 
 	return verifySetInventory(ctx, data)
 }
 
+// inspectGuards serializes two fixed read-only commands and validates both
+// owned tables. This gate owns bounded executable use; it does not coordinate
+// other privileged writers, make the two listings atomic, or admit mutations.
+func (process *process) inspectGuards(ctx context.Context, layout *guardLayout) (*guardInventory, error) {
+	if layout == nil || len(layout.managedInterfaces) == 0 {
+		return nil, errors.New("firewall: missing guarded inspection layout")
+	}
+	if err := process.acquire(ctx); err != nil {
+		return nil, err
+	}
+	defer process.release()
+	inet, err := process.run(ctx, commandInput{op: inspectOwned})
+	if err != nil {
+		return nil, err
+	}
+	netdev, err := process.run(ctx, commandInput{op: inspectGuardEgress})
+	if err != nil {
+		return nil, err
+	}
+	return layout.inspect(ctx, guardListings{inet: inet, netdev: netdev})
+}
+
 // applyPrepared checks the preparation window after acquiring the command gate.
 // Queueing, slow rendering or a backward clock cannot restart an absolute lease.
 func (process *process) applyPrepared(ctx context.Context, batch *preparedBatch) error {
@@ -151,9 +174,12 @@ func checkPreparation(batch *preparedBatch) error {
 func (process *process) run(ctx context.Context, input commandInput) ([]byte, error) {
 	arguments := []string{"--json", "list", "table", "inet", ownedTable}
 	switch input.op {
-	case inspectOwned:
+	case inspectOwned, inspectGuardEgress:
 		if len(input.payload) != 0 {
 			return nil, errors.New("firewall: inspection cannot accept a program")
+		}
+		if input.op == inspectGuardEgress {
+			arguments = []string{"--json", "list", "table", "netdev", ownedTable}
 		}
 	case applyOwned:
 		if err := validateBatch(input.payload); err != nil {

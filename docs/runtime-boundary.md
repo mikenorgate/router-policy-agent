@@ -268,12 +268,43 @@ NAS or address collector.
 
 Permanent here means surviving lease replacement and expiry, not reboot.
 Durable address restoration and closed boot ordering are still required, as
-are the guarded-table schema verifier, writer fencing and executor wiring.
+are writer fencing and guarded-mutation wiring.
 Related ICMP/PMTU and other required control traffic need explicit reviewed
 paths; they must not be enabled by a broad bypass. P01–P10 ordering, all-role
 Security tests, synchronized UTC/suspend behavior, DSR and native/translated
 return correlation remain activation gates. No production deployment is
 authorized by these fixtures.
+
+### Owned guard inspection
+
+`guardLayout.inspect` verifies both tables against fixed code-owned schemas
+derived from the validated root interface geometry. It checks every set type,
+capacity and timeout flag, chain hook/device/priority/policy, ordered rule
+expression, mark mask, conntrack direction/listener and verdict. Chain, set and
+rule handles must be positive and unique within their table; table handles have
+a separate namespace. Unexpected objects
+and extra, missing or reordered rules reject the whole observation.
+
+Inspection reconstructs projections and final-egress mirrors from the full
+tuples. Their keys and configured lifetimes must match; remaining expiry seconds
+can differ between separately observed tables. Every live tuple needs permanent
+MAC/address classification and an approved Untrusted interface. Historical
+addresses may remain after grants disappear. Replacement checks retain those
+classifications and enforce cumulative MAC/address capacity before admitting
+additional identities or representations.
+
+`process.inspectGuards` uses the pinned executable, two fixed read-only argument
+vectors, bounded output and the existing local command gate. Actual kernel tests
+cover empty/populated tables, compiler-derived counterparts, revocation with
+classification retention, missing mirrors and extra rules. Counterparts in a
+listing are not proof of translated forwarding.
+
+These reads are not an atomic kernel-generation snapshot. A lease expiring
+between them can cause a mirror mismatch; inspection fails closed and may be
+retried without renewing authorization. Nor does this schema attest the
+surrounding protected chain graph or coordinate other privileged writers.
+Guarded updates remain rejected by the current mutation path until those
+requirements are implemented together.
 
 ## Verification
 

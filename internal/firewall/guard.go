@@ -28,7 +28,8 @@ const (
 // bootstrap paths, translator legs and the caller of permit_flow. This layout
 // alone must not be activated as a complete router policy.
 type guardLayout struct {
-	interfaces []string
+	interfaces        []string
+	managedInterfaces []string
 }
 
 func newGuardLayout(baseline policy.Baseline) (*guardLayout, error) {
@@ -43,11 +44,16 @@ func newGuardLayout(baseline policy.Baseline) (*guardLayout, error) {
 		return nil, err
 	}
 	interfaces := make([]string, 0)
+	managed := make([]string, 0)
 	for _, zone := range validated.Zones {
 		interfaces = append(interfaces, zone.Interfaces...)
+		if zone.Role == policy.Untrusted {
+			managed = append(managed, zone.Interfaces...)
+		}
 	}
 	slices.Sort(interfaces)
-	return &guardLayout{interfaces: interfaces}, nil
+	slices.Sort(managed)
+	return &guardLayout{interfaces: interfaces, managedInterfaces: managed}, nil
 }
 
 // program is private image-generation plumbing. No current executable or

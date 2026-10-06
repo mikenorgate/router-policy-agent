@@ -125,6 +125,7 @@ func TestProcessPinsExecutableAndRestrictsArguments(t *testing.T) {
 		arguments []string
 	}{
 		{name: "inspect", op: inspectOwned, arguments: []string{"--json", "list", "table", "inet", ownedTable}},
+		{name: "inspect final egress", op: inspectGuardEgress, arguments: []string{"--json", "list", "table", "netdev", ownedTable}},
 		{name: "apply", op: applyOwned, payload: clearBatch(t), arguments: []string{"--json", "--file", "-"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -151,6 +152,9 @@ func TestProcessPinsExecutableAndRestrictsArguments(t *testing.T) {
 	}
 	if _, err := process.execute(t.Context(), inspectOwned, clearBatch(t)); err == nil {
 		t.Fatal("inspection accepted a program")
+	}
+	if _, err := process.execute(t.Context(), inspectGuardEgress, clearBatch(t)); err == nil {
+		t.Fatal("egress inspection accepted a program")
 	}
 	arbitrary := []byte(`{"nftables":[{"flush":{"ruleset":null}}]}`)
 	if _, err := process.execute(t.Context(), applyOwned, arbitrary); err == nil {
@@ -189,6 +193,34 @@ func TestProcessFailureAndCancellation(t *testing.T) {
 			}
 			if test.file == "nft-sleep" && !errors.Is(err, context.DeadlineExceeded) {
 				t.Fatalf("deadline was not propagated: %v", err)
+			}
+		})
+	}
+}
+
+func TestProcessGuardInspectionDoesNotTrustOtherObjects(t *testing.T) {
+	t.Parallel()
+	layout, _ := guardListingFixture(t, false)
+	for _, name := range []string{"nft-fixture", "nft-inventory"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			process, _ := processFixture(t, name)
+			if inventory, err := process.inspectGuards(t.Context(), layout); err == nil || inventory != nil {
+				t.Fatal("unverified or set-only observations became guarded inventory")
+			}
+			if _, err := process.inspectGuards(t.Context(), nil); err == nil {
+				t.Fatal("guard inspection accepted a missing root layout")
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			if _, err := process.inspectGuards(ctx, layout); !errors.Is(err, context.Canceled) {
+				t.Fatal("guard inspection lost cancellation")
+			}
+			if err := process.close(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := process.inspectGuards(t.Context(), layout); !errors.Is(err, os.ErrClosed) {
+				t.Fatal("guard inspection used a closed executor")
 			}
 		})
 	}
