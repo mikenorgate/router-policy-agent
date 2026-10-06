@@ -77,6 +77,10 @@ func TestPinnedProfilePairsCompilationRenderingAndInspection(t *testing.T) {
 	if _, err := profile.ruleset.inspect(t.Context(), profile.layout, listing); err != nil {
 		t.Fatal("caller mutation changed the reviewed object contract")
 	}
+	retained, err := policy.New(profile.baseline)
+	if err != nil || retained.BaselineHash() != candidate.BaselineHash {
+		t.Fatal("caller mutation changed the helper's paired compiler catalog")
+	}
 }
 
 func TestPinnedProfilesCannotExchangeAuthorization(t *testing.T) {

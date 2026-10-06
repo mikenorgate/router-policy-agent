@@ -78,6 +78,33 @@ the apply/seal operations below, but no executable wires it into these callbacks
 Qualified binding collection, protected packet-path integration, translation
 coordination and packaging remain unfinished.
 
+The private `guardedService` composes the real backend, engine and IPC server.
+It copies the catalog from the backend's paired profile, rejects a differing
+compiler hash and uses the backend's same clock. Configuration supplies only
+normal persistence, independently qualified binding collection, a non-root
+reader UID and a request timeout within the ten-second cap. Construction does
+not load state, read bindings, sample time or touch nftables.
+
+Serving requires root and adopts a supervisor-created listener exactly once.
+The service runs closed startup before the IPC server can accept a request;
+failed startup never silently initializes or repairs state. Concurrent or
+repeated calls reject without adopting their listeners. On every adopted exit,
+including canceled startup, an independent two-second stop attempts to remove
+permits and retains any cleanup error. The supervisor's socket path is not
+unlinked; the caller must keep backend and store resources open until cleanup
+finishes. A failed seal is an error, not evidence that packets were revoked.
+The signed boot path must still keep forwarding closed before this service
+starts. No current command enables it.
+
+`make kernel-service` exercises this composition with a root-owned persistent
+store, a real UID-65534 client and the actual nftables backend. Native UDP
+packets verify both IPv4/IPv6 initiation directions, correlated replies,
+account-disable revocation and shutdown. Startup restores stored classifiers
+without permits, and missing/corrupt state rejects while existing kernel
+history is retained. The fixture's extra `SETUID` capability switches only the
+test client's identity; it is not a production helper requirement. The bindings
+remain synthetic and do not establish actual association or address ownership.
+
 Both callbacks receive independently owned `state.Classification` slices for
 MACs, IPv4 and IPv6. `Seal` must clear only owned permits and union these
 classifiers into the existing guard; an empty startup/stop handoff must not

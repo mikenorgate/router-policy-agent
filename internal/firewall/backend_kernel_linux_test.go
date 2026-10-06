@@ -156,11 +156,7 @@ func setupBackendPacketFixture(ctx context.Context, t *testing.T) (*guardedBacke
 	return backend, root
 }
 
-func backendAuthorizationFixture(
-	t *testing.T,
-	profile *routerProfile,
-	observationAge time.Duration,
-) (policy.Authorization, state.Classification) {
+func backendInputFixture(t *testing.T, observationAge time.Duration) policy.Input {
 	t.Helper()
 	_, _, _, input := renderFixture(t)
 	input.Now = time.Now().Round(0).UTC()
@@ -191,6 +187,16 @@ func backendAuthorizationFixture(
 			input.Directory.Devices[0].GroupIDs = append(input.Directory.Devices[0].GroupIDs, id)
 		}
 	}
+	return input
+}
+
+func backendAuthorizationFixture(
+	t *testing.T,
+	profile *routerProfile,
+	observationAge time.Duration,
+) (policy.Authorization, state.Classification) {
+	t.Helper()
+	input := backendInputFixture(t, observationAge)
 	authorization, err := profile.renderer.compiler.CompileAuthorization(t.Context(), input, policy.CaptureAge())
 	if err != nil {
 		t.Fatal(err)

@@ -20,6 +20,7 @@ const maximumRouterProfile = 8 << 20
 // this file, reader IPC, generation metadata or a live firewall listing.
 type routerProfile struct {
 	digest   string
+	baseline policy.Baseline
 	renderer *renderer
 	layout   *guardLayout
 	ruleset  *reviewedRuleset
@@ -91,7 +92,9 @@ func decodePinnedProfile(ctx context.Context, data []byte, pin string) (*routerP
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return &routerProfile{digest: digest, renderer: renderer, layout: layout, ruleset: ruleset}, nil
+	return &routerProfile{
+		digest: digest, baseline: baseline, renderer: renderer, layout: layout, ruleset: ruleset,
+	}, nil
 }
 
 // Profile paths and policy data stay out of printable diagnostics. Trusted

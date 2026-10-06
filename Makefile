@@ -4,7 +4,7 @@ KERNEL_TEST_IMAGE ?= router-policy-agent-kernel-test:local
 VERSION ?= dev
 LDFLAGS = -X github.com/mikenorgate/router-policy-agent/internal/cli.Version=$(VERSION)
 
-.PHONY: build test integration kernel vet fmt fuzz lint security check help
+.PHONY: build test integration kernel kernel-service vet fmt fuzz lint security check help
 
 ## build: Build available command-line tools
 build:
@@ -29,6 +29,18 @@ kernel:
 		--mount type=bind,src="$(CURDIR)",dst=/workspace,readonly \
 		--workdir /workspace $(KERNEL_TEST_IMAGE) \
 		go test -race -shuffle=on -count=1 -tags integration,kernel ./internal/firewall
+
+## kernel-service: Qualify non-root IPC, durable state and actual native firewall lifecycle
+kernel-service:
+	$(CONTAINER) build --file packaging/Containerfile.kernel --tag $(KERNEL_TEST_IMAGE) packaging
+	$(CONTAINER) run --rm --network none --cap-drop ALL --cap-add NET_ADMIN --cap-add NET_RAW --cap-add SETUID \
+		--sysctl net.ipv4.ip_forward=1 --sysctl net.ipv6.conf.all.forwarding=1 \
+		--security-opt no-new-privileges \
+		--env ROUTER_POLICY_KERNEL_TEST=isolated \
+		--mount type=bind,src="$(CURDIR)",dst=/workspace,readonly \
+		--workdir /workspace $(KERNEL_TEST_IMAGE) \
+		go test -race -shuffle=on -count=1 -tags integration,kernel,servicekernel \
+		-run '^TestKernelGuardedService' ./internal/firewall
 
 ## vet: Run Go static checks
 vet:
@@ -60,7 +72,7 @@ check: test vet
 
 ## lint: Run the pinned golangci-lint tool (install instructions in CI workflow)
 lint:
-	golangci-lint run --build-tags integration,kernel ./...
+	golangci-lint run --build-tags integration,kernel,servicekernel ./...
 
 ## security: Scan reachable dependencies (install instructions in CI workflow)
 security:

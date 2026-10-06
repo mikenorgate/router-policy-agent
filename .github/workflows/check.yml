@@ -68,6 +68,8 @@ jobs:
           persist-credentials: false
       - name: Qualify actual kernel expiry and atomic owned updates
         run: ROUTER_POLICY_REQUIRE_HEADER_TEST=1 make kernel
+      - name: Qualify non-root IPC through the actual guarded native backend
+        run: make kernel-service
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -83,7 +85,7 @@ jobs:
       - name: Pinned static and security linters
         run: |
           go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
-          golangci-lint run --build-tags integration,kernel ./...
+          golangci-lint run --build-tags integration,kernel,servicekernel ./...
   security:
     name: Vulnerability check
     runs-on: ubuntu-latest
