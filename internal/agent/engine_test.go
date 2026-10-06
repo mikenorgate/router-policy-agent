@@ -19,13 +19,14 @@ import (
 var errFixture = errors.New("synthetic backend failure")
 
 type fixture struct {
-	baseline  policy.Baseline
-	directory policy.DirectorySnapshot
-	bindings  binding.Snapshot
-	now       time.Time
-	events    []string
-	store     memoryState
-	firewall  memoryFirewall
+	baseline   policy.Baseline
+	directory  policy.DirectorySnapshot
+	bindings   binding.Snapshot
+	now        time.Time
+	clockSetAt time.Time
+	events     []string
+	store      memoryState
+	firewall   memoryFirewall
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -54,6 +55,7 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	f.now = f.directory.ObservedAt
+	f.clockSetAt = time.Now()
 	f.store = memoryState{document: state.Initial(), events: &f.events}
 	f.firewall.events = &f.events
 	return f
@@ -61,7 +63,7 @@ func newFixture(t *testing.T) *fixture {
 
 func (f *fixture) options(mode Mode) Options {
 	options := Options{Mode: mode,
-		State: Persistence{Load: f.store.load, Save: f.store.save}, Clock: func() time.Time { return f.now },
+		State: Persistence{Load: f.store.load, Save: f.store.save}, Clock: f.utc,
 		Bindings: func(ctx context.Context) (binding.Snapshot, error) {
 			f.events = append(f.events, "bindings")
 			return f.bindings, ctx.Err()
@@ -82,7 +84,33 @@ func (f *fixture) engine(t *testing.T, options Options) *Engine {
 	if err := engine.Start(t.Context()); err != nil {
 		t.Fatal(err)
 	}
+	if f.store.document.LastDirectoryObservedAt.IsZero() {
+		// A real collector obtains initial ownership evidence after helper
+		// startup. Keep normal tests on a running clock, not frozen UTC that
+		// can trigger the rollback guard when a loaded test runner pauses.
+		observed := f.utc()
+		f.directory.ObservedAt = observed
+		f.bindings.ObservedAt = observed
+		for recordIndex := range f.bindings.Records {
+			record := &f.bindings.Records[recordIndex]
+			record.AssociatedAt = observed
+			for addressIndex := range record.Addresses {
+				record.Addresses[addressIndex].ObservedAt = observed
+			}
+		}
+	}
 	return engine
+}
+
+func (f *fixture) utc() time.Time {
+	if f.now.IsZero() {
+		return time.Time{}
+	}
+	return f.now.Add(time.Since(f.clockSetAt))
+}
+
+func (f *fixture) setUTC(now time.Time) {
+	f.now, f.clockSetAt = now, time.Now()
 }
 
 type memoryState struct {
@@ -209,7 +237,7 @@ func TestBindingFailurePersistsNewerDenialAndBlocksReplay(t *testing.T) {
 	// old allow that is replayed below.
 	f.directory.Devices = slices.Clone(f.directory.Devices)
 	f.directory.Devices[0].Active = false
-	f.now = f.now.Add(time.Second)
+	f.setUTC(f.now.Add(time.Second))
 	f.directory.ObservedAt = f.now
 	sourceError = errFixture
 	if _, err := engine.Process(t.Context(), f.directory); !errors.Is(err, errFixture) || len(f.firewall.active) != 0 {
@@ -244,7 +272,7 @@ func TestFailureCannotAuthorize(t *testing.T) {
 		{name: "incomplete bindings", mutate: func(f *fixture) { f.bindings.Complete = false }},
 		{name: "incomplete directory", mutate: func(f *fixture) { f.directory.Complete = false }},
 		{name: "corrupt state", mutate: func(f *fixture) { f.store.document.SchemaVersion = 99 }},
-		{name: "unsafe clock", mutate: func(f *fixture) { f.now = time.Time{} }},
+		{name: "unsafe clock", mutate: func(f *fixture) { f.setUTC(time.Time{}) }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -340,7 +368,7 @@ func TestClockChangeAndExpiryBeforeApply(t *testing.T) {
 		options.State.Save = func(ctx context.Context, document state.Document) error {
 			err := originalSave(ctx, document)
 			if f.store.saves == 2 {
-				f.now = f.now.Add(delta)
+				f.setUTC(f.now.Add(delta))
 			}
 			return err
 		}
@@ -396,7 +424,7 @@ func TestRepeatingSnapshotCannotRenewItsLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	firstExpiry := f.firewall.candidates[0].Grants[0].ExpiresAt()
-	f.now = f.now.Add(30 * time.Second)
+	f.setUTC(f.now.Add(30 * time.Second))
 	f.bindings.ObservedAt = f.now
 	f.bindings.Records[0].AssociatedAt = f.now
 	f.bindings.Records[0].Addresses[0].ObservedAt = f.now
@@ -404,7 +432,7 @@ func TestRepeatingSnapshotCannotRenewItsLease(t *testing.T) {
 		!f.firewall.candidates[1].Grants[0].ExpiresAt().Equal(firstExpiry) {
 		t.Fatalf("identical directory snapshot renewed its lease: %v", err)
 	}
-	f.now = firstExpiry
+	f.setUTC(firstExpiry)
 	if _, err := engine.Process(t.Context(), f.directory); err == nil || len(f.firewall.active) != 0 {
 		t.Fatalf("expired directory restored permission: %v", err)
 	}
@@ -421,7 +449,7 @@ func TestClockRollbackCannotRejuvenateEvidence(t *testing.T) {
 		// Two minutes really elapse, but UTC advances only 45 seconds after a
 		// backward adjustment. It still exceeds the durable validation time.
 		time.Sleep(120 * time.Second)
-		f.now = f.now.Add(45 * time.Second)
+		f.setUTC(f.now.Add(45 * time.Second))
 		receipt, err := engine.Process(t.Context(), f.directory)
 		if err == nil || receipt.Status != "" || len(f.firewall.active) != 0 || len(f.firewall.candidates) != 1 {
 			t.Fatalf("old evidence regained a lease after clock rollback: %+v, %v", receipt, err)
@@ -458,7 +486,7 @@ func TestRestartRequiresFreshEvidence(t *testing.T) {
 					t.Fatal(err)
 				}
 				time.Sleep(5 * time.Second)
-				f.now = f.now.Add(5 * time.Second)
+				f.setUTC(f.now.Add(5 * time.Second))
 				engine = f.engine(t, f.options(Enforce))
 				if test.directory {
 					f.directory.ObservedAt = f.now
@@ -533,7 +561,7 @@ func TestSmallClockLagDoesNotExtendLeaseOrAdmitFutureEvidence(t *testing.T) {
 				}
 				deadline := f.firewall.active[0].ExpiresAt()
 				time.Sleep(30 * time.Second)
-				f.now = f.now.Add(30*time.Second - 100*time.Millisecond)
+				f.setUTC(f.now.Add(30*time.Second - 100*time.Millisecond))
 				f.bindings.ObservedAt = f.now
 				f.bindings.Records[0].AssociatedAt = f.now
 				f.bindings.Records[0].Addresses[0].ObservedAt = f.now
@@ -565,11 +593,11 @@ func TestClockRecoveryRequiresNewEvidence(t *testing.T) {
 			t.Fatal(err)
 		}
 		time.Sleep(120 * time.Second)
-		f.now = f.now.Add(45 * time.Second)
+		f.setUTC(f.now.Add(45 * time.Second))
 		if _, err := engine.Process(t.Context(), f.directory); err == nil {
 			t.Fatal("clock rollback was accepted")
 		}
-		f.now = f.now.Add(75 * time.Second)
+		f.setUTC(f.now.Add(75 * time.Second))
 		if _, err := engine.Process(t.Context(), f.directory); err == nil || len(f.firewall.active) != 0 {
 			t.Fatal("clock recovery refreshed old directory or binding evidence")
 		}
