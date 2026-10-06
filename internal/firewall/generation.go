@@ -14,7 +14,8 @@ const maximumGenerationSize = 1024
 // renewable authorization or proof of an installed protected floor. The owning
 // writer protocol must advance sequence on every transition, keep ready false
 // until revoked old variants and new paths are independently verified, and
-// never restore an older sequence. No publisher is implemented here yet.
+// never restore an older sequence. The transition coordinator supplies that
+// ordering, but actual owning writers and the floor auditor remain unwired.
 type writerGeneration struct {
 	SchemaVersion int    `json:"schema_version"`
 	Sequence      uint64 `json:"sequence"`

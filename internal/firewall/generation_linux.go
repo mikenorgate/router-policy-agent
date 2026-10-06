@@ -63,22 +63,26 @@ func (g *generationGate) with(
 }
 
 func checkWriterGeneration(ctx context.Context, root *os.Root, expected writerGeneration) error {
-	file, err := hostfs.OpenRegular(ctx, root, hostfs.FileOptions{
-		Name: writerGenerationFile, OwnerUID: 0, MaximumSize: maximumGenerationSize,
-	})
-	if err != nil {
-		return err
-	}
-	data, readErr := io.ReadAll(io.LimitReader(file, maximumGenerationSize+1))
-	closeErr := file.Close()
-	if err := errors.Join(readErr, closeErr, ctx.Err()); err != nil {
-		return err
-	}
-	actual, err := decodeWriterGeneration(data)
+	actual, err := readWriterGeneration(ctx, root)
 	if err != nil {
 		return err
 	}
 	return actual.check(expected)
+}
+
+func readWriterGeneration(ctx context.Context, root *os.Root) (writerGeneration, error) {
+	file, err := hostfs.OpenRegular(ctx, root, hostfs.FileOptions{
+		Name: writerGenerationFile, OwnerUID: 0, MaximumSize: maximumGenerationSize,
+	})
+	if err != nil {
+		return writerGeneration{}, err
+	}
+	data, readErr := io.ReadAll(io.LimitReader(file, maximumGenerationSize+1))
+	closeErr := file.Close()
+	if err := errors.Join(readErr, closeErr, ctx.Err()); err != nil {
+		return writerGeneration{}, err
+	}
+	return decodeWriterGeneration(data)
 }
 
 func (g *generationGate) close(ctx context.Context) error {

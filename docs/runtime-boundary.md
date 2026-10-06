@@ -239,16 +239,41 @@ generation before and after its callback. Missing, unsafe, closed or mismatched
 metadata prevents the callback from starting. A changed generation cannot renew
 the original authorization or reset a prepared batch's elapsed-time fence.
 
+The owning-writer coordinator holds that same fence for the entire transition:
+
+1. Check the exact previous record, reserve two increasing sequences, and
+   atomically publish a closed record with the previous hashes.
+2. Revoke old application permits before the owned update callback can change
+   a mapping or protected path. Keep historical deny classification intact.
+3. Run the independent audit callback, check its observed hashes against the
+   reviewed target, and publish a new ready record at the second sequence.
+
+Each publication writes an owner-only temporary file, syncs it, renames only
+the fixed record, then syncs the pinned directory. The coordinator rechecks its
+closed vector between callbacks. Invalid, missing, stale or exhausted state
+cannot start callbacks or be initialized automatically. Normal transitions
+require ready state. Explicit recovery from an existing closed record repeats
+revocation, the idempotent owned update and audit with new sequences; it never
+restores an older vector or application leases. Hashes are coordination data,
+not permission or proof that the named protected paths exist.
+
+A publication error after rename, or a final fence-check failure, has an
+indeterminate outcome: the replacement may already be visible. The coordinator
+returns an error and no successful vector; it cannot roll back external state
+or promise that every failure leaves a closed record. Owning adapters must keep
+permits sealed and independently re-audit before granting again. Tests cover
+stage failures, cancellation, drift and explicit recovery after reopening the
+gate. An isolated native IPv4/IPv6 fixture uses test-only nftables adapters to
+prove that old traffic is blocked before the update callback, readiness does not
+restore permits, and classification and unrelated objects remain intact. It
+does not retarget a translator or qualify the full protected floor.
+
 These primitives are not wired into the executor's mutation path. An advisory
 lock cannot restrain a nonparticipating privileged writer, and a generation
-record cannot attest kernel rules or translator state. The owning writers still
-need a durable transition protocol that withdraws old permits before retargeting
-an alias or replacing protected paths, advances the sequence, and publishes
-readiness only after independent audit. No generation publisher is supplied yet.
-A post-callback error reports drift; it cannot undo an operation that already
-ran. Failure sealing, boot ordering, every privileged writer and the actual
-protected paths must be integrated and qualified before guarded writes activate.
-Deployment paths, hashes and generation records remain private configuration.
+record cannot attest kernel rules or translator state. Actual owning adapters,
+failure sealing, boot ordering, every privileged writer and independent checks
+of protected paths must be integrated and qualified before guarded writes
+activate. Deployment paths, hashes and records remain private configuration.
 
 ## Packet-field qualification
 
