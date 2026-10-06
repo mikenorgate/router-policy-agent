@@ -37,7 +37,7 @@ vet:
 fmt:
 	gofmt -w cmd internal
 
-## fuzz: Exercise policy, protocol and durable-state fuzz properties
+## fuzz: Exercise policy, protocol, durable-state and writer-generation fuzz properties
 fuzz:
 	$(GO) test ./internal/strictjson -run '^$$' -fuzz FuzzDecode -fuzztime 10s
 	$(GO) test ./internal/policy -run '^$$' -fuzz FuzzParseGroup -fuzztime 10s
@@ -48,6 +48,7 @@ fuzz:
 	$(GO) test ./internal/firewall -run '^$$' -fuzz FuzzBatch -fuzztime 10s
 	$(GO) test ./internal/firewall -run '^$$' -fuzz FuzzInventory -fuzztime 10s
 	$(GO) test ./internal/firewall -run '^$$' -fuzz FuzzGuardInspection -fuzztime 10s
+	$(GO) test ./internal/firewall -run '^$$' -fuzz '^FuzzWriterGeneration$$' -fuzztime 10s
 	$(GO) test ./internal/agent -run '^$$' -fuzz FuzzClock -fuzztime 10s
 
 ## check: Run tests and static checks
