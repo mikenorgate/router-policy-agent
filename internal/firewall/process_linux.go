@@ -33,6 +33,7 @@ const (
 	inspectOwned operation = iota + 1
 	applyOwned
 	inspectGuardEgress
+	inspectWholeRuleset
 )
 
 // process has no public arbitrary-command method. Its descriptor is acquired
@@ -118,6 +119,30 @@ func (process *process) inspectGuards(ctx context.Context, layout *guardLayout) 
 	return layout.inspect(ctx, guardListings{inet: inet, netdev: netdev})
 }
 
+// inspectRuleset uses one complete read-only listing, then checks independently
+// reviewed objects and both fixed helper tables. It never snapshots an expected
+// policy or admits a mutation. External writers must still share the fence.
+func (process *process) inspectRuleset(
+	ctx context.Context,
+	contract *reviewedRuleset,
+	layout *guardLayout,
+) (*rulesetObservation, error) {
+	validContract := contract != nil && len(contract.program) != 0
+	validLayout := layout != nil && len(layout.managedInterfaces) != 0
+	if !validContract || !validLayout {
+		return nil, errors.New("firewall: missing complete ruleset inspection dependencies")
+	}
+	if err := process.acquire(ctx); err != nil {
+		return nil, err
+	}
+	defer process.release()
+	data, err := process.run(ctx, commandInput{op: inspectWholeRuleset})
+	if err != nil {
+		return nil, err
+	}
+	return contract.inspect(ctx, layout, data)
+}
+
 // applyPrepared checks the preparation window after acquiring the command gate.
 // Queueing, slow rendering or a backward clock cannot restart an absolute lease.
 func (process *process) applyPrepared(ctx context.Context, batch *preparedBatch) error {
@@ -174,12 +199,15 @@ func checkPreparation(batch *preparedBatch) error {
 func (process *process) run(ctx context.Context, input commandInput) ([]byte, error) {
 	arguments := []string{"--json", "list", "table", "inet", ownedTable}
 	switch input.op {
-	case inspectOwned, inspectGuardEgress:
+	case inspectOwned, inspectGuardEgress, inspectWholeRuleset:
 		if len(input.payload) != 0 {
 			return nil, errors.New("firewall: inspection cannot accept a program")
 		}
 		if input.op == inspectGuardEgress {
 			arguments = []string{"--json", "list", "table", "netdev", ownedTable}
+		}
+		if input.op == inspectWholeRuleset {
+			arguments = []string{"--json", "list", "ruleset"}
 		}
 	case applyOwned:
 		if err := validateBatch(input.payload); err != nil {

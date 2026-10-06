@@ -62,3 +62,21 @@ Current source implements the strict parser, cancellable compiler, contributor u
 7. Package pinned, verified release artifacts and hardened systemd services. Integrate the router template, independent policy auditor and hardening/health checks together. Keep environment data in private configuration.
 
 Only after those gates pass should an operator approve shadow deployment, one canary and then small cohort cutovers. Do not remove an existing router rule until equivalent permitting and denial/revocation evidence exists. Production directory TLS/credential rotation, actual controller peer addresses and access-layer source controls are deployment prerequisites, not defaults supplied by this public project.
+
+## Reviewed ruleset drift checks
+
+The read-only executor can compare one complete native listing against an
+independently prepared object contract, while checking both helper tables
+against their code-owned schema. It checks ordered rule expressions, declared
+hooks and priorities, jump targets, static set/map contents and object inventory.
+Unexpected tables are not silently ignored. Isolated kernel tests install an
+independently authored fixture and prove that changes to early accepts, rule
+order, protected sets, mappings and hooks reject without changing any objects.
+
+This comparison does not establish that the contract implements P01–P10. The
+image-policy owner must derive and authenticate the private projection, map
+every protection to its enforcing paths and qualify those paths with packets.
+Neither a complete listing nor a matching hash may bootstrap that expected
+policy. Actual writers, the generation fence, permitting paths, translator
+identity and boot restoration are still integration gates. See the
+[comparison contract and limits](runtime-boundary.md#reviewed-ruleset-comparison).

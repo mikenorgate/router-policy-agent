@@ -135,22 +135,11 @@ func verifyListingHeader(objects []json.RawMessage) error {
 }
 
 func verifyOwnedListingHeader(objects []json.RawMessage, family string) error {
-	var metadata struct {
-		Version     string `json:"version"`
-		ReleaseName string `json:"release_name"`
-		Schema      int    `json:"json_schema_version"`
+	if len(objects) != 2 {
+		return errors.New("firewall: exact owned listing header required")
 	}
-	if err := decodeNested(
-		objects[0],
-		"metainfo",
-		&metadata,
-		[]string{"version", "release_name", "json_schema_version"},
-	); err != nil {
+	if err := verifyListingMetadata(objects[0]); err != nil {
 		return err
-	}
-	validLibrary := metadata.Version == "1.1.3" && metadata.ReleaseName == "Commodore Bullmoose #4"
-	if !validLibrary || metadata.Schema != 1 {
-		return errors.New("firewall: unsupported listing format")
 	}
 	var table struct {
 		Family string `json:"family"`
@@ -167,6 +156,27 @@ func verifyOwnedListingHeader(objects []json.RawMessage, family string) error {
 	}
 	if table.Family != family || table.Name != ownedTable || table.Handle == 0 {
 		return errors.New("firewall: owned table identity differs")
+	}
+	return nil
+}
+
+func verifyListingMetadata(raw json.RawMessage) error {
+	var metadata struct {
+		Version     string `json:"version"`
+		ReleaseName string `json:"release_name"`
+		Schema      int    `json:"json_schema_version"`
+	}
+	if err := decodeNested(
+		raw,
+		"metainfo",
+		&metadata,
+		[]string{"version", "release_name", "json_schema_version"},
+	); err != nil {
+		return err
+	}
+	validLibrary := metadata.Version == "1.1.3" && metadata.ReleaseName == "Commodore Bullmoose #4"
+	if !validLibrary || metadata.Schema != 1 {
+		return errors.New("firewall: unsupported listing format")
 	}
 	return nil
 }

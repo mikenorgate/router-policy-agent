@@ -275,6 +275,53 @@ failure sealing, boot ordering, every privileged writer and independent checks
 of protected paths must be integrated and qualified before guarded writes
 activate. Deployment paths, hashes and records remain private configuration.
 
+## Reviewed ruleset comparison
+
+`reviewedRuleset` holds a private, independently prepared artifact with exactly
+`schema_version: 1` and an `objects` array. This is not the native `nftables`
+listing envelope. Artifacts cannot contain runtime handles, counter statistics
+or helper-owned objects. The decoder limits input to 4 MiB and 8,192 objects;
+it neither loads a file nor authenticates who supplied those bytes. A future
+trusted loader must check image/projection provenance and ownership. Reader IPC
+must never carry this artifact. There is no command for learning an expected
+contract from the live router.
+
+The executor uses the checked executable descriptor and the fixed read-only
+arguments `--json list ruleset`. One listing supplies the surrounding program
+and both helper tables. The verifier requires the selected library metadata,
+positive unique object handles within each table and a complete inventory. It
+checks helper tables using their fixed schema and compares every other table,
+chain, set, data map, named counter and rule against the reviewed artifact.
+Comments and expression data remain part of that comparison. Unknown objects,
+fields or statements, flow offload, verdict maps and unqualified dynamic
+collections reject. Empty static sets remain part of the contract; their
+contents cannot disappear into an ignored runtime field.
+
+Declaration and static element order are normalized. Rule order within each
+chain is preserved. Only actual table/object handles and validated unsigned
+packet/byte counter statistics are omitted from policy identity; a field with
+the same name elsewhere in an expression is not discarded. Numeric values stay
+exact rather than passing through floating-point conversion. Jump/goto targets
+must be declared regular chains, with no cycle and a maximum depth of 16.
+Standalone input, forward and output drop hooks are required, but do not by
+themselves prove a protected floor. Same-priority hooks with overlapping address
+families reject, including a reviewed hook competing with the helper's hook.
+
+Successful comparison returns the hash of the observed normalized program and
+verified helper inventory. Failure returns no partial observation and makes no
+firewall change. This is a point-in-time observation, not authorization or an
+automatic sealing operation. Production reads and later mutations must still
+hold the shared writer fence, enforce the original lease deadlines and seal
+permits on failure. Other privileged writers must participate in that protocol.
+Updates to reviewed root-owned sets/maps need independently prepared expected
+data coordinated with their owning generation; an observed replacement must
+not become its own expectation.
+
+The isolated fixture verifies drift detection and lack of mutation. It is not
+the deployment's P01–P10 projection or packet qualification. Authenticated
+projection loading, independent protection/caller-path checks, writer adapters,
+guarded mutation wiring and actual translator-state verification remain required.
+
 ## Packet-field qualification
 
 A separate test-only fixture routes raw UDP packets between two virtual links

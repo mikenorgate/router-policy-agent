@@ -126,6 +126,7 @@ func TestProcessPinsExecutableAndRestrictsArguments(t *testing.T) {
 	}{
 		{name: "inspect", op: inspectOwned, arguments: []string{"--json", "list", "table", "inet", ownedTable}},
 		{name: "inspect final egress", op: inspectGuardEgress, arguments: []string{"--json", "list", "table", "netdev", ownedTable}},
+		{name: "inspect complete ruleset", op: inspectWholeRuleset, arguments: []string{"--json", "list", "ruleset"}},
 		{name: "apply", op: applyOwned, payload: clearBatch(t), arguments: []string{"--json", "--file", "-"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -155,6 +156,9 @@ func TestProcessPinsExecutableAndRestrictsArguments(t *testing.T) {
 	}
 	if _, err := process.execute(t.Context(), inspectGuardEgress, clearBatch(t)); err == nil {
 		t.Fatal("egress inspection accepted a program")
+	}
+	if _, err := process.execute(t.Context(), inspectWholeRuleset, clearBatch(t)); err == nil {
+		t.Fatal("complete inspection accepted a program")
 	}
 	arbitrary := []byte(`{"nftables":[{"flush":{"ruleset":null}}]}`)
 	if _, err := process.execute(t.Context(), applyOwned, arbitrary); err == nil {
@@ -221,6 +225,38 @@ func TestProcessGuardInspectionDoesNotTrustOtherObjects(t *testing.T) {
 			}
 			if _, err := process.inspectGuards(t.Context(), layout); !errors.Is(err, os.ErrClosed) {
 				t.Fatal("guard inspection used a closed executor")
+			}
+		})
+	}
+}
+
+func TestProcessRulesetInspectionRejectsIncompleteEvidence(t *testing.T) {
+	t.Parallel()
+	contract := reviewedRulesetFixture(t)
+	layout, _ := guardListingFixture(t, false)
+	for _, name := range []string{"nft-fixture", "nft-inventory", "nft-error"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			process, _ := processFixture(t, name)
+			if observation, err := process.inspectRuleset(t.Context(), contract, layout); err == nil || observation != nil {
+				t.Fatal("incomplete listing or failed command produced verified ruleset evidence")
+			}
+			if _, err := process.inspectRuleset(t.Context(), nil, layout); err == nil {
+				t.Fatal("complete inspection accepted missing reviewed objects")
+			}
+			if _, err := process.inspectRuleset(t.Context(), contract, nil); err == nil {
+				t.Fatal("complete inspection accepted missing helper geometry")
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			if _, err := process.inspectRuleset(ctx, contract, layout); !errors.Is(err, context.Canceled) {
+				t.Fatal("complete inspection lost cancellation")
+			}
+			if err := process.close(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := process.inspectRuleset(t.Context(), contract, layout); !errors.Is(err, os.ErrClosed) {
+				t.Fatal("complete inspection used a closed executor")
 			}
 		})
 	}
