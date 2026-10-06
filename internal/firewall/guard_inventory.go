@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/netip"
 	"slices"
+
+	"github.com/mikenorgate/router-policy-agent/internal/state"
 )
 
 func (inventory *guardInventory) checkMirrors(
@@ -155,13 +157,31 @@ func (inventory *guardInventory) checkInterfaces(ctx context.Context, commands [
 }
 
 func (inventory *guardInventory) checkReplacement(ctx context.Context, data []byte) error {
+	return inventory.checkGuardReplacement(ctx, data, nil)
+}
+
+// checkPreparedReplacement accepts historical additions only against the
+// owned, validated state retained by preparation. The raw set-only path still
+// cannot admit them, and this inspection is not a privileged writer fence.
+func (inventory *guardInventory) checkPreparedReplacement(ctx context.Context, prepared *preparedGuardBatch) error {
+	if prepared == nil {
+		return errors.New("firewall: missing prepared guarded replacement")
+	}
+	return inventory.checkGuardReplacement(ctx, prepared.batch.data, prepared.classification)
+}
+
+func (inventory *guardInventory) checkGuardReplacement(
+	ctx context.Context,
+	data []byte,
+	classification *state.Classification,
+) error {
 	if inventory == nil || ctx == nil {
 		return errors.New("firewall: missing guarded replacement dependencies")
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := validateGuardBatch(ctx, data); err != nil {
+	if err := validateGuardBatchWithClassification(ctx, data, classification); err != nil {
 		return err
 	}
 	guarded, err := decodeGuardChanges(data)

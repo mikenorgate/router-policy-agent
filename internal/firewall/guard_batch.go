@@ -7,6 +7,7 @@ import (
 	"errors"
 	"slices"
 
+	"github.com/mikenorgate/router-policy-agent/internal/state"
 	"github.com/mikenorgate/router-policy-agent/internal/strictjson"
 )
 
@@ -14,7 +15,8 @@ import (
 // The current set-only executor deliberately does not admit this new schema.
 // Guarded inventory verification and writer fencing are required before wiring.
 type preparedGuardBatch struct {
-	batch preparedBatch
+	batch          preparedBatch
+	classification *state.Classification
 }
 
 type guardChanges struct {
@@ -30,6 +32,14 @@ type guardProjection struct {
 // No variant is discarded; this is not proof of translated packet correlation.
 // Cohort and observed addresses remain permanent when leased grants are flushed.
 func prepareGuards(ctx context.Context, source *preparedBatch) (*preparedGuardBatch, error) {
+	return prepareGuardsWithClassification(ctx, source, nil)
+}
+
+func prepareGuardsWithClassification(
+	ctx context.Context,
+	source *preparedBatch,
+	classification *state.Classification,
+) (*preparedGuardBatch, error) {
 	if ctx == nil || source == nil {
 		return nil, errors.New("firewall: missing guarded transaction or context")
 	}
@@ -39,16 +49,32 @@ func prepareGuards(ctx context.Context, source *preparedBatch) (*preparedGuardBa
 	if err := validateBatch(source.data); err != nil {
 		return nil, err
 	}
-	data, err := expandGuardBatch(ctx, source.data)
+	var owned *state.Classification
+	if classification != nil {
+		value, err := state.CloneClassification(*classification)
+		if err != nil {
+			return nil, errors.New("firewall: invalid historical classification")
+		}
+		owned = &value
+	}
+	data, err := expandGuardBatchWithClassification(ctx, source.data, owned)
 	if err != nil {
 		return nil, err
 	}
 	prepared := *source
 	prepared.data = data
-	return &preparedGuardBatch{batch: prepared}, nil
+	return &preparedGuardBatch{batch: prepared, classification: owned}, nil
 }
 
 func expandGuardBatch(ctx context.Context, source []byte) ([]byte, error) {
+	return expandGuardBatchWithClassification(ctx, source, nil)
+}
+
+func expandGuardBatchWithClassification(
+	ctx context.Context,
+	source []byte,
+	classification *state.Classification,
+) ([]byte, error) {
 	if ctx == nil {
 		return nil, errors.New("firewall: missing guard expansion context")
 	}
@@ -59,6 +85,13 @@ func expandGuardBatch(ctx context.Context, source []byte) ([]byte, error) {
 	if err := json.Unmarshal(source, &original); err != nil {
 		return nil, errors.New("firewall: invalid logical guard input")
 	}
+	if classification != nil {
+		var err error
+		original, err = classifyGuardChanges(ctx, original, *classification)
+		if err != nil {
+			return nil, err
+		}
+	}
 	commands := make([]change, 0, 6*len(grantSets)+4)
 	for _, name := range grantSets {
 		for _, ref := range guardLeaseRefs(name) {
@@ -66,6 +99,24 @@ func expandGuardBatch(ctx context.Context, source []byte) ([]byte, error) {
 		}
 	}
 	addresses := map[string]map[string]bool{classified4Set: {}, classified6Set: {}}
+	if classification != nil {
+		for index, name := range []string{classified4Set, classified6Set} {
+			values := classification.IPv4
+			if index == 1 {
+				values = classification.IPv6
+			}
+			for _, value := range values {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				encoded, err := json.Marshal(value)
+				if err != nil {
+					return nil, errors.New("firewall: historical address encoding failed")
+				}
+				addresses[name][string(encoded)] = true
+			}
+		}
+	}
 	leases := make([]change, 0)
 	for _, command := range original.Commands {
 		if err := ctx.Err(); err != nil {
@@ -170,6 +221,14 @@ func expandGuardBatch(ctx context.Context, source []byte) ([]byte, error) {
 // full tuples. Extra operations, permanent-set removal, missing/mismatched
 // mirrors, altered timeouts and arbitrary object changes cannot be admitted.
 func validateGuardBatch(ctx context.Context, data []byte) error {
+	return validateGuardBatchWithClassification(ctx, data, nil)
+}
+
+func validateGuardBatchWithClassification(
+	ctx context.Context,
+	data []byte,
+	classification *state.Classification,
+) error {
 	if ctx == nil {
 		return errors.New("firewall: missing guard validation context")
 	}
@@ -198,7 +257,7 @@ func validateGuardBatch(ctx context.Context, data []byte) error {
 	if err := validateBatch(source); err != nil {
 		return err
 	}
-	expected, err := expandGuardBatch(ctx, source)
+	expected, err := expandGuardBatchWithClassification(ctx, source, classification)
 	if err != nil {
 		return err
 	}

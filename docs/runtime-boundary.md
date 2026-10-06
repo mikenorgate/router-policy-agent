@@ -84,10 +84,11 @@ classifiers into the existing guard; an empty startup/stop handoff must not
 flush historical classification. Startup passes all validated persisted
 classifiers before accepting requests. A failed restore prevents startup.
 Failure cleanup also supplies newly observed classifiers if their durable
-write failed, including failure after rename. The signed boot path must still
-prevent traffic before restoration, and a restricted guarded writer must
-implement and qualify this contract. Memory-backed helper tests prove the
-handoff and ordering, not cold-boot packet protection.
+write failed, including failure after rename. Fixed guarded preparation can
+restore this history and clear all lease mirrors; the current executable cannot
+apply those transactions. The signed boot path must still prevent traffic before
+restoration. Helper tests prove the handoff and ordering; isolated kernel tests
+exercise the restore transactions, not production cold-boot packet protection.
 
 Responses contain only schema, shadow/applied/rejected status, a fixed error
 code, baseline hash, compilation time and grant/denial counts. The maximum
@@ -258,7 +259,7 @@ One logical lease produces three named representations:
 | Incoming projection | Interface, device IP, peer IP, listener port | Bounded lease |
 | Final egress mirror | Interface, actual destination MAC, device IP, peer IP, listener port | Bounded lease |
 | Managed MAC sets in both tables | Canonical MAC | No timeout or runtime removal |
-| Classified IPv4/IPv6 sets | Previously permitted device representation | No timeout or runtime removal |
+| Classified IPv4/IPv6 sets | Independently qualified historical device representation | No timeout or runtime removal |
 
 The forward guard checks the initiation direction, protocol, connection state
 and original destination listener against a current lease. It checks outgoing
@@ -301,14 +302,45 @@ changed destination MACs with and without a live lease, and an unrelated legacy
 flow that still works. These are synthetic ownership records, not a qualified
 NAS or address collector.
 
-Permanent here means surviving lease replacement and expiry, not reboot.
-Durable address restoration and closed boot ordering are still required, as
-are writer fencing and guarded-mutation wiring.
+Permanent kernel sets survive lease replacement and expiry, not reboot by
+themselves. Restoring saved classifiers is tested separately below. Closed boot
+ordering, writer fencing and guarded-mutation wiring are still required.
 Related ICMP/PMTU and other required control traffic need explicit reviewed
 paths; they must not be enabled by a broad bypass. P01–P10 ordering, all-role
 Security tests, synchronized UTC/suspend behavior, DSR and native/translated
 return correlation remain activation gates. No production deployment is
 authorized by these fixtures.
+
+### Historical restoration and sealing
+
+`prepareClassifiedGuards` accepts the helper-owned `state.Classification` handoff
+and retains an independently owned, validated copy. Every rendered leased MAC
+and device address must already be in that saved history. Restoring classifiers
+cannot manufacture a lease, change its deadline or reset the renderer's original
+preparation fence. The reader still cannot submit this state through IPC.
+
+`prepareGuardSeal` atomically flushes all 24 owned lease mirrors and appends the
+saved MAC cohort to both tables and saved IPv4/IPv6 addresses to their permanent
+sets. It works with zero grants. An explicit empty handoff clears leases without
+removing any existing classifier. Neither operation can change rules, tables,
+hooks, marks, routes or maps, or expire/delete a permanent identity.
+
+The prepared validator regenerates the entire fixed transaction against its
+retained state. Extra addresses, omitted classifiers, timeout-bearing history
+and changed mirrors reject. Raw guarded validation does not gain permission to
+restore independently supplied history. Inventory checks bound the union of
+existing kernel classifiers and saved additions; capacity exhaustion rejects
+rather than dropping old protection.
+
+Isolated kernel tests cover zero-grant restore, repeated idempotent additions,
+compiler-expanded counterpart retention, clearing live leases, restoration
+after recreating only the owned tables and unchanged unrelated objects. A native
+packet fixture reassigns a historical IPv4/IPv6 address to an unmanaged MAC:
+restored classification denies both initiation directions before a legacy
+permit, while a never-classified address on that same MAC remains unaffected.
+These fixtures do not prove translated packet correlation, storage-to-boot
+traffic ordering or the production protected floor. Guarded mutation remains
+unavailable in the runtime executor.
 
 ### Owned guard inspection
 

@@ -472,6 +472,13 @@ func applyGuardFixture(ctx context.Context, t *testing.T, data []byte) {
 	if err := validateGuardBatch(ctx, data); err != nil {
 		t.Fatal(err)
 	}
+	executeGuardFixture(ctx, t, data)
+}
+
+// This executor is only for acknowledged disposable kernel tests. Production
+// guarded mutation remains unavailable until its independent writer/floor gate.
+func executeGuardFixture(ctx context.Context, t *testing.T, data []byte) {
+	t.Helper()
 	command := exec.CommandContext(ctx, "/usr/sbin/nft", "--json", "--file", "-")
 	command.Env = []string{"LC_ALL=C", "PATH=/usr/sbin:/usr/bin"}
 	command.Stdin = bytes.NewReader(data)
