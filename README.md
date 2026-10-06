@@ -73,6 +73,13 @@ Run `make check` and `make fuzz`. Keep tests synthetic and do not add deployment
 
 Repository maintainers should require passing checks and reviewed pull requests in [branch protection](https://github.com/mikenorgate/router-policy-agent/settings/branches), set read-only default tokens and outside-contributor approval in [Actions settings](https://github.com/mikenorgate/router-policy-agent/settings/actions), and keep any future release credentials in [Actions secrets](https://github.com/mikenorgate/router-policy-agent/settings/secrets/actions) behind a reviewed [release environment](https://github.com/mikenorgate/router-policy-agent/settings/environments). The current check workflow requests only `contents: read`; it does not publish releases or need deployment secrets. Workflow files do not configure these repository settings.
 
+The native fixture uses a separate default-drop router table and a late lease
+recheck. Tests cover the missing-bridge deny, an independent protected endpoint,
+and withdrawal between hooks in all four flow directions. This fixture skips
+the packet-header-changing case in a rootless runner; CI requires it with
+`ROUTER_POLICY_REQUIRE_HEADER_TEST=1`. See the [handoff contract](docs/runtime-boundary.md#guard-layout-and-atomic-mirrors)
+for the mark reservation, hook ordering and remaining production gates.
+
 ## License
 
 [MIT](LICENSE), matching the standalone companion-project release model.

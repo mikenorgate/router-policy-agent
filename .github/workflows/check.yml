@@ -67,7 +67,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Qualify actual kernel expiry and atomic owned updates
-        run: make kernel
+        run: ROUTER_POLICY_REQUIRE_HEADER_TEST=1 make kernel
   lint:
     name: Lint
     runs-on: ubuntu-latest

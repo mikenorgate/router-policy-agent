@@ -59,20 +59,23 @@ func (layout *guardLayout) schema(family string) (*guardTableSchema, error) {
 			"family": family, "table": ownedTable, "name": "guard_forward",
 			"type": "filter", "hook": "forward", "prio": -150, "policy": "accept",
 		}
+		schema.chains["guard_confirm"] = map[string]any{
+			"family": family, "table": ownedTable, "name": "guard_confirm",
+			"type": "filter", "hook": "forward", "prio": 150, "policy": "accept",
+		}
 		schema.chains["permit_flow"] = map[string]any{"family": family, "table": ownedTable, "name": "permit_flow"}
 		reset := []any{guardMark(guardBinary("&", guardMeta("mark"), numbers[guardMarkKeep]))}
 		schema.rules["guard_forward"] = append([][]any{reset},
 			guardForwardExpressions("return", numbers)...)
-		schema.rules["guard_forward"] = append(schema.rules["guard_forward"],
-			[]any{guardMatch(guardPayload("ether", "saddr"), "@"+cohortSet), map[string]any{"drop": nil}})
-		for _, address := range []struct{ family, set string }{
-			{family: "ip", set: classified4Set}, {family: "ip6", set: classified6Set},
-		} {
-			for _, direction := range []string{"saddr", "daddr"} {
-				schema.rules["guard_forward"] = append(schema.rules["guard_forward"],
-					[]any{guardMatch(guardPayload(address.family, direction), "@"+address.set), map[string]any{"drop": nil}})
-			}
+		schema.rules["guard_forward"] = append(schema.rules["guard_forward"], guardClassificationExpressions()...)
+		schema.rules["guard_confirm"] = [][]any{{map[string]any{"jump": map[string]any{"target": "permit_flow"}}}}
+		for _, tag := range []string{fromOriginalTag, fromReplyTag, toOriginalTag, toReplyTag} {
+			schema.rules["guard_confirm"] = append(schema.rules["guard_confirm"], []any{
+				guardMatch(guardBinary("&", guardMeta("mark"), uint64(0xff000000)), numbers[tag]),
+				map[string]any{"drop": nil},
+			})
 		}
+		schema.rules["guard_confirm"] = append(schema.rules["guard_confirm"], guardClassificationExpressions()...)
 		schema.rules["permit_flow"] = guardForwardExpressions("accept", numbers)
 		return schema, nil
 	}
@@ -107,6 +110,21 @@ func (layout *guardLayout) schema(family string) (*guardTableSchema, error) {
 			[]any{guardMatch(guardPayload("ether", "daddr"), "@"+cohortSet), map[string]any{"drop": nil}})
 	}
 	return schema, nil
+}
+
+func guardClassificationExpressions() [][]any {
+	rules := [][]any{
+		{guardMatch(guardPayload("ether", "saddr"), "@"+cohortSet), map[string]any{"drop": nil}},
+	}
+	for _, address := range []struct{ family, set string }{
+		{family: "ip", set: classified4Set}, {family: "ip6", set: classified6Set},
+	} {
+		for _, direction := range []string{"saddr", "daddr"} {
+			rules = append(rules,
+				[]any{guardMatch(guardPayload(address.family, direction), "@"+address.set), map[string]any{"drop": nil}})
+		}
+	}
+	return rules
 }
 
 func guardForwardExpressions(verdict string, numbers map[string]uint64) [][]any {

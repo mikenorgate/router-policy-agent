@@ -25,6 +25,7 @@ kernel:
 		--sysctl net.ipv4.ip_forward=1 --sysctl net.ipv6.conf.all.forwarding=1 \
 		--security-opt no-new-privileges \
 		--env ROUTER_POLICY_KERNEL_TEST=isolated \
+		--env ROUTER_POLICY_REQUIRE_HEADER_TEST \
 		--mount type=bind,src="$(CURDIR)",dst=/workspace,readonly \
 		--workdir /workspace $(KERNEL_TEST_IMAGE) \
 		go test -race -shuffle=on -count=1 -tags integration,kernel ./internal/firewall

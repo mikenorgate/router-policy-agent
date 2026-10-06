@@ -387,8 +387,9 @@ independently checked mark ownership/reset and atomic guard/lease updates.
 ## Guard layout and atomic mirrors
 
 `guardLayout` generates fixed image-owned rules from a validated, copied router
-baseline. It defines an early forward guard, a regular `permit_flow` chain and
-final Ethernet egress guards on the reviewed role interfaces. Runtime updates
+baseline. It defines an early forward guard, a late `guard_confirm` base chain,
+a regular `permit_flow` chain and final Ethernet egress guards on the reviewed
+role interfaces. Runtime updates
 cannot select rules, hooks, priorities or marks. No current executable installs
 this layout or accepts its rule program from the reader.
 
@@ -417,11 +418,29 @@ with a 32-bit direction tag. Egress uses the 32-bit `mark` datatype for that
 bounded port value; it does not query conntrack. This reservation still needs an
 independent audit against every image-owned mark user and privileged writer.
 
-The later permit chain rechecks the lease instead of treating a cached mark as
-authorization. The image must call it in the same table after protected checks
-and before ordinary application default deny. Other base-chain drops remain
-authoritative. This project has not yet integrated or independently verified
-that complete router chain graph.
+The separate router table cannot jump to a helper-table regular chain. The
+image owner instead places the four fixed `guardBridgeRules` provisional tag
+accepts after its protected checks and before ordinary application default
+deny. The router keeps its default-drop policy. An early guard return alone
+does not override that drop ([Netfilter chain ordering](https://wiki.nftables.org/wiki-nftables/index.php/Configuring_chains)).
+
+`guard_confirm`, at forward priority 150, calls `permit_flow` within the helper
+table. This rechecks the current lease, protocol, direction, original listener,
+interfaces and endpoint tuple after the router's provisional accept. A failed
+lookup drops every provisional tag, even if another hook changed the tuple to
+an otherwise unclassified address. Untagged managed MACs and historical
+addresses also remain closed. The late guard does not clear the provisional tag
+before this check: losing it would let a changed, unclassified tuple fall
+through. Successful lookup stamps the direction/listener again for final MAC
+verification. Unrelated traffic remains subject to the router's own policy.
+
+The image must independently qualify the priority -150 early guard, the
+protected paths and provisional bridge between the guards, the priority 150
+confirmation and final egress mirrors. These helpers neither install rules in
+the router table nor authenticate its protected policy. Other base-chain drops
+remain authoritative. Changes after confirmation and userspace translation
+need separate qualification; this layout does not prove the complete router
+chain graph or reserve marks against every other writer.
 
 `prepareGuards` retains the logical renderer's original preparation fence and
 derives all 24 lease sets as one transaction. MAC additions are mirrored into
@@ -435,13 +454,31 @@ proof of their translated packet path.
 
 The native fixture compiles fresh synthetic directory/binding input, renders
 the immutable authorization and applies its validated mirrors. It routes real
-IPv4/IPv6 TCP handshakes and UDP datagrams. Explicit revocation blocks existing
+IPv4/IPv6 TCP handshakes and UDP datagrams through a separate router table.
+With its stateful shortcut disabled, counters prove all four direction tags
+use the bridge; removing the bridge blocks new traffic despite a current lease.
+An independent protected endpoint/port drop blocks previously working UDP
+flows before the router's established shortcut. Neighboring TCP/UDP listeners
+receive no inherited permit. Explicit revocation blocks existing
 TCP/UDP traffic in both initiation directions before the fixture's established
 accept; UDP kernel expiry also blocks a previously working flow. Separate cases
 check reverse-initiation denial, unknown addresses behind a legacy permit,
 changed destination MACs with and without a live lease, and an unrelated legacy
-flow that still works. These are synthetic ownership records, not a qualified
-NAS or address collector.
+flow that still works. Test-only fault rules delete the queried lease between
+the early and late hooks while leaving final mirrors live. Counters prove all
+four directions reach that fault and none passes confirmation. This deliberately
+inconsistent fixture tests revalidation; production updates still require
+atomic replacement of every mirror and do not mutate leases from packets.
+
+A further fixture rewrites the device address after the bridge while retaining
+the provisional tag. Counters distinguish late-guard rejection from final MAC
+or checksum handling. Linux restricts payload writes in user namespaces
+([kernel payload implementation](https://github.com/torvalds/linux/blob/master/net/netfilter/nft_payload.c));
+that fixture reports a skip in a rootless runner. CI sets
+`ROUTER_POLICY_REQUIRE_HEADER_TEST=1`, passed through `make kernel`, so inability
+to exercise the header-changing case fails the job. No host networking or
+additional container capabilities are permitted for it. These are synthetic
+ownership records, not a qualified NAS or address collector.
 
 Permanent kernel sets survive lease replacement and expiry, not reboot by
 themselves. Restoring saved classifiers is tested separately below. Closed boot

@@ -340,7 +340,9 @@ func TestReviewedRulesetPrecisionAndCancellation(t *testing.T) {
 
 func TestReviewedRulesetGraphDepthAndHookCollisions(t *testing.T) {
 	t.Parallel()
-	for _, name := range []string{"deep graph", "same-family priority", "cross-family priority", "helper priority"} {
+	for _, name := range []string{
+		"deep graph", "same-family priority", "cross-family priority", "helper priority", "helper confirmation priority",
+	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			var artifact struct {
@@ -369,13 +371,15 @@ func TestReviewedRulesetGraphDepthAndHookCollisions(t *testing.T) {
 					json.RawMessage(`{"chain":{"family":"ip","table":"other","name":"competing","type":"filter","hook":"forward","prio":0,"policy":"accept"}}`))
 			case "helper priority":
 				artifact.Objects[3] = bytes.ReplaceAll(artifact.Objects[3], []byte(`"prio":0`), []byte(`"prio":-150`))
+			case "helper confirmation priority":
+				artifact.Objects[3] = bytes.ReplaceAll(artifact.Objects[3], []byte(`"prio":0`), []byte(`"prio":150`))
 			}
 			data, err := json.Marshal(artifact)
 			if err != nil {
 				t.Fatal(err)
 			}
 			contract, err := decodeReviewedRuleset(t.Context(), data)
-			if name != "helper priority" {
+			if name != "helper priority" && name != "helper confirmation priority" {
 				if err == nil || contract != nil {
 					t.Fatal("cyclic, excessive or unordered root contract accepted")
 				}
@@ -391,7 +395,11 @@ func TestReviewedRulesetGraphDepthAndHookCollisions(t *testing.T) {
 			if err := json.Unmarshal(listing, &installed); err != nil {
 				t.Fatal(err)
 			}
-			installed.Objects[4] = bytes.ReplaceAll(installed.Objects[4], []byte(`"prio":0`), []byte(`"prio":-150`))
+			priority := "-150"
+			if name == "helper confirmation priority" {
+				priority = "150"
+			}
+			installed.Objects[4] = bytes.ReplaceAll(installed.Objects[4], []byte(`"prio":0`), []byte(`"prio":`+priority))
 			listing, err = json.Marshal(installed)
 			if err != nil {
 				t.Fatal(err)

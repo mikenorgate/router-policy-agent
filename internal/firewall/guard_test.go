@@ -27,7 +27,7 @@ func TestGuardLayoutOwnedGeometryAndCancellation(t *testing.T) {
 		t.Fatal("guard configuration retained caller-owned interface storage")
 	}
 	for _, fragment := range []string{
-		"hook forward priority -150", "chain permit_flow", "hook egress",
+		"hook forward priority -150", "hook forward priority 150", "chain permit_flow", "hook egress",
 		"ip saddr @" + classified4Set + " drop", "ip6 daddr @" + classified6Set + " drop",
 		"ether saddr @" + cohortSet + " drop", "ether daddr @" + cohortSet + " drop",
 		"meta mark set meta mark & " + guardMarkKeep,
@@ -62,6 +62,24 @@ func TestGuardLayoutOwnedGeometryAndCancellation(t *testing.T) {
 	baseline.Zones[0].Interfaces[0] = `lan10"; accept`
 	if _, err := newGuardLayout(baseline); err == nil {
 		t.Fatal("unvalidated interface entered image rules")
+	}
+}
+
+func TestGuardBridgeUsesOnlyFixedProvisionalTags(t *testing.T) {
+	t.Parallel()
+	expected := []string{
+		"meta mark & 0xff000000 == 0xa1000000 accept",
+		"meta mark & 0xff000000 == 0xa2000000 accept",
+		"meta mark & 0xff000000 == 0xa3000000 accept",
+		"meta mark & 0xff000000 == 0xa4000000 accept",
+	}
+	if strings.Join(guardBridgeRules(), "\n") != strings.Join(expected, "\n") {
+		t.Fatal("bridge widened the fixed provisional mark contract")
+	}
+	mutated := guardBridgeRules()
+	mutated[0] = "accept"
+	if guardBridgeRules()[0] != expected[0] {
+		t.Fatal("bridge retained caller-owned rule storage")
 	}
 }
 

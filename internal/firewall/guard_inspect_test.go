@@ -167,6 +167,9 @@ func TestGuardInspectionRejectsSchemaRuleAndLeaseDrift(t *testing.T) {
 		{name: "case folded handle", old: `"handle":1`, replacement: `"Handle":1`},
 		{name: "wrong forward hook", old: `"hook":"forward"`, replacement: `"hook":"prerouting"`},
 		{name: "wrong forward priority", old: `"prio":-150`, replacement: `"prio":150`},
+		{name: "wrong confirmation priority", old: `"prio":150`, replacement: `"prio":149`},
+		{name: "changed confirmation caller", old: `"target":"permit_flow"`, replacement: `"target":"guard_forward"`},
+		{name: "changed confirmation tag", old: `2701131776`, replacement: `2701131777`},
 		{name: "changed regular chain", old: `"name":"permit_flow"`,
 			replacement: `"name":"permit_flow","hook":"forward","type":"filter","prio":0,"policy":"accept"`},
 		{name: "changed mark reservation", old: `16711680`, replacement: `0`},
@@ -222,7 +225,7 @@ func TestGuardInspectionRejectsMissingExtraAndReorderedObjects(t *testing.T) {
 	t.Parallel()
 	for _, name := range []string{
 		"missing rule", "extra rule", "unknown object", "duplicate handle",
-		"rule order", "missing mirror", "null objects", "trailing input",
+		"rule order", "missing mirror", "null objects", "trailing input", "missing confirmation chain",
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -236,6 +239,18 @@ func TestGuardInspectionRejectsMissingExtraAndReorderedObjects(t *testing.T) {
 			switch name {
 			case "missing rule":
 				listing.Objects = listing.Objects[:len(listing.Objects)-1]
+			case "missing confirmation chain":
+				removed := false
+				for index, object := range listing.Objects {
+					if bytes.Contains(object, []byte(`"name":"guard_confirm"`)) {
+						listing.Objects = slices.Delete(listing.Objects, index, index+1)
+						removed = true
+						break
+					}
+				}
+				if !removed {
+					t.Fatal("confirmation-chain rejection fixture did not change")
+				}
 			case "extra rule":
 				listing.Objects = append(listing.Objects, listing.Objects[len(listing.Objects)-1])
 			case "unknown object":

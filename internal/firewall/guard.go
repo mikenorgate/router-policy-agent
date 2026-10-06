@@ -23,9 +23,9 @@ const (
 )
 
 // guardLayout describes image-owned objects, not reader-controlled rules. It
-// supplies an early guard, a later permit chain and final destination-MAC checks.
+// supplies early and late guards, a local permit chain and final MAC checks.
 // The image must independently qualify the protected floor, mark reservation,
-// bootstrap paths, translator legs and the caller of permit_flow. This layout
+// bootstrap paths, translator legs and the separate router-table bridge. This layout
 // alone must not be activated as a complete router policy.
 type guardLayout struct {
 	interfaces        []string
@@ -80,15 +80,22 @@ func (layout *guardLayout) program(ctx context.Context) ([]byte, error) {
 	lines = append(lines, "chain guard_forward { type filter hook forward priority -150; policy accept;",
 		"meta mark set meta mark & "+guardMarkKeep)
 	lines = append(lines, guardLookups("return")...)
-	lines = append(lines,
-		"ether saddr @"+cohortSet+" drop",
-		"ip saddr @"+classified4Set+" drop", "ip daddr @"+classified4Set+" drop",
-		"ip6 saddr @"+classified6Set+" drop", "ip6 daddr @"+classified6Set+" drop", "}",
-		// An image-owned later chain must jump here only after all protected
-		// checks, and before its ordinary application default deny. Recheck the
-		// lease; a tag alone cannot authorize a later permit.
-		"chain permit_flow {",
+	lines = append(lines, guardClassificationDrops()...)
+	lines = append(lines, "}",
+		// The router's separate table provisionally accepts fixed tags only
+		// after its protected checks. A cross-table jump is not possible. This
+		// later base chain rechecks the actual lease inside our own table.
+		"chain guard_confirm { type filter hook forward priority 150; policy accept;",
+		"jump permit_flow",
 	)
+	for _, tag := range []string{fromOriginalTag, fromReplyTag, toOriginalTag, toReplyTag} {
+		// Keep the provisional tag until lookup succeeds. If another hook
+		// changed the tuple to an otherwise unclassified endpoint, a stale
+		// tag must still deny rather than fall through the accept policy.
+		lines = append(lines, "meta mark & 0xff000000 == "+tag+" drop")
+	}
+	lines = append(lines, guardClassificationDrops()...)
+	lines = append(lines, "}", "chain permit_flow {")
 	lines = append(lines, guardLookups("accept")...)
 	lines = append(lines, "}", "}", "table netdev "+ownedTable+" {",
 		fmt.Sprintf("set %s { type ether_addr; size %d; }", cohortSet, maximumCohortSize))
@@ -129,6 +136,26 @@ func (layout *guardLayout) program(ctx context.Context) ([]byte, error) {
 		return nil, err
 	}
 	return []byte(strings.Join(lines, "\n") + "\n"), nil
+}
+
+func guardClassificationDrops() []string {
+	return []string{
+		"ether saddr @" + cohortSet + " drop",
+		"ip saddr @" + classified4Set + " drop", "ip daddr @" + classified4Set + " drop",
+		"ip6 saddr @" + classified6Set + " drop", "ip6 daddr @" + classified6Set + " drop",
+	}
+}
+
+// guardBridgeRules is image-generation plumbing for the router-owned table,
+// not a runtime operation. Its owner must place these provisional accepts after
+// protected checks and before ordinary default deny, with guard_confirm active
+// afterward. Neither these rules alone nor the early tag authorizes a packet.
+func guardBridgeRules() []string {
+	lines := make([]string, 0, 4)
+	for _, tag := range []string{fromOriginalTag, fromReplyTag, toOriginalTag, toReplyTag} {
+		lines = append(lines, "meta mark & 0xff000000 == "+tag+" accept")
+	}
+	return lines
 }
 
 func permanentGuardSets() []string {
