@@ -111,6 +111,9 @@ func TestHelperConfigRejectsUnsafeRootFiles(t *testing.T) {
 				}
 			case "wrong owner":
 				if err := root.Chown(helperConfigFile, 65534, 65534); err != nil {
+					if errors.Is(err, syscall.EPERM) {
+						t.Skip("ownership substitution needs CAP_CHOWN in the isolated root CI job")
+					}
 					t.Fatal(err)
 				}
 			case "public directory":
