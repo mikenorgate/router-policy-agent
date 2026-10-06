@@ -115,7 +115,7 @@ func TestDecodeAndClone(t *testing.T) {
 		{name: "wrong case", raw: []byte(strings.Replace(string(valid), "schema_version", "Schema_Version", 1))},
 		{name: "null cohort", raw: []byte(strings.Replace(string(valid), `["02:00:00:00:00:01"]`, "null", 1))},
 		{name: "null ledger map", raw: []byte(strings.Replace(string(valid), `"network_groups":{"group":true}`, `"network_groups":null`, 1))},
-		{name: "bad schema", raw: []byte(strings.Replace(string(valid), `"schema_version":1`, `"schema_version":2`, 1))},
+		{name: "old schema", raw: []byte(strings.Replace(string(valid), `"schema_version":2`, `"schema_version":1`, 1))},
 		{name: "invalid cohort mac", raw: []byte(strings.Replace(string(valid), "02:00:00:00:00:01", "invalid", 1))},
 		{name: "uppercase digest", raw: []byte(strings.Replace(string(valid), advanced(t).DirectoryHash,
 			strings.ToUpper(advanced(t).DirectoryHash), 1))},

@@ -153,25 +153,37 @@ func (store *memoryState) save(ctx context.Context, next state.Document) error {
 type memoryFirewall struct {
 	events     *[]string
 	cohort     []string
+	ipv4       []string
+	ipv6       []string
 	active     []policy.Grant
 	candidates []policy.Candidate
 	sealError  error
 	applyError error
 }
 
-func (firewall *memoryFirewall) seal(ctx context.Context, cohort []string) error {
+func (firewall *memoryFirewall) seal(ctx context.Context, classification state.Classification) error {
 	*firewall.events = append(*firewall.events, "seal")
 	if err := errors.Join(ctx.Err(), firewall.sealError); err != nil {
 		return err
 	}
 	firewall.active = nil
-	firewall.cohort = append(firewall.cohort, cohort...)
+	firewall.cohort = append(firewall.cohort, classification.MACs...)
 	slices.Sort(firewall.cohort)
 	firewall.cohort = slices.Compact(firewall.cohort)
+	firewall.ipv4 = append(firewall.ipv4, classification.IPv4...)
+	firewall.ipv6 = append(firewall.ipv6, classification.IPv6...)
+	slices.Sort(firewall.ipv4)
+	slices.Sort(firewall.ipv6)
+	firewall.ipv4 = slices.Compact(firewall.ipv4)
+	firewall.ipv6 = slices.Compact(firewall.ipv6)
 	return nil
 }
 
-func (firewall *memoryFirewall) apply(ctx context.Context, authorization policy.Authorization, cohort []string) error {
+func (firewall *memoryFirewall) apply(
+	ctx context.Context,
+	authorization policy.Authorization,
+	classification state.Classification,
+) error {
 	*firewall.events = append(*firewall.events, "apply")
 	candidate, err := authorization.Snapshot(ctx)
 	if err != nil {
@@ -181,7 +193,9 @@ func (firewall *memoryFirewall) apply(ctx context.Context, authorization policy.
 	// Also simulate an error after a backend has partially changed its objects:
 	// the engine's error path must remove permits rather than trust that failure.
 	firewall.active = candidate.Grants
-	firewall.cohort = slices.Clone(cohort)
+	firewall.cohort = slices.Clone(classification.MACs)
+	firewall.ipv4 = slices.Clone(classification.IPv4)
+	firewall.ipv6 = slices.Clone(classification.IPv6)
 	return firewall.applyError
 }
 
@@ -193,7 +207,7 @@ func TestHelperTransactionOrdering(t *testing.T) {
 	if err != nil || receipt.Status != ipc.StatusApplied || receipt.GrantCount != 1 || receipt.DenialCount != 0 {
 		t.Fatalf("helper transaction failed: %+v, %v", receipt, err)
 	}
-	want := []string{"seal", "load", "seal", "load", "save", "bindings", "save", "apply"}
+	want := []string{"seal", "load", "seal", "load", "save", "bindings", "save", "save", "apply"}
 	if !slices.Equal(f.events, want) || len(f.store.document.CohortMACs) != 1 || len(f.firewall.active) != 1 {
 		t.Fatalf("unsafe transaction ordering: %v", f.events)
 	}
@@ -265,7 +279,8 @@ func TestFailureCannotAuthorize(t *testing.T) {
 	}{
 		{name: "load", mutate: func(f *fixture) { f.store.loadError = errFixture }},
 		{name: "observation save", mutate: func(f *fixture) { f.store.failSave = 1 }},
-		{name: "anchor save", mutate: func(f *fixture) { f.store.failSave = 2 }},
+		{name: "address save", mutate: func(f *fixture) { f.store.failSave = 2 }},
+		{name: "anchor save", mutate: func(f *fixture) { f.store.failSave = 3 }},
 		{name: "save advanced before sync error", mutate: func(f *fixture) {
 			f.store.failSave, f.store.advanceThenFail = 2, true
 		}},
@@ -330,8 +345,8 @@ func TestCancellationAfterPartialApplyRemovesPermits(t *testing.T) {
 	defer cancel()
 	options := f.options(Enforce)
 	apply := options.Firewall.Apply
-	options.Firewall.Apply = func(ctx context.Context, authorization policy.Authorization, cohort []string) error {
-		err := apply(ctx, authorization, cohort)
+	options.Firewall.Apply = func(ctx context.Context, authorization policy.Authorization, classification state.Classification) error {
+		err := apply(ctx, authorization, classification)
 		cancel()
 		return err
 	}
@@ -467,7 +482,7 @@ func TestBackendHandoffRetainsSamplingPersistenceAndQueueAge(t *testing.T) {
 		options.Clock = func() time.Time {
 			reads++
 			utc := f.utc()
-			if reads == 3 {
+			if reads == 4 {
 				// The compile-time UTC sample is obtained before this delay.
 				// Its conservative engine clamp cannot turn the delay into life.
 				time.Sleep(100 * time.Millisecond)
@@ -476,12 +491,12 @@ func TestBackendHandoffRetainsSamplingPersistenceAndQueueAge(t *testing.T) {
 		}
 		save := options.State.Save
 		options.State.Save = func(ctx context.Context, document state.Document) error {
-			if f.store.saves == 1 {
+			if f.store.saves == 2 {
 				time.Sleep(12 * time.Second)
 			}
 			return save(ctx, document)
 		}
-		options.Firewall.Apply = func(ctx context.Context, authorization policy.Authorization, cohort []string) error {
+		options.Firewall.Apply = func(ctx context.Context, authorization policy.Authorization, classification state.Classification) error {
 			// A trusted backend must use the result's original monotonic anchor
 			// after queueing, even if a UTC reading remains deceptively fresh.
 			time.Sleep(15 * time.Second)
@@ -489,7 +504,7 @@ func TestBackendHandoffRetainsSamplingPersistenceAndQueueAge(t *testing.T) {
 			if err != nil || remaining != 62800*time.Millisecond {
 				t.Fatalf("backend handoff lost original age: remaining=%v, error=%v", remaining, err)
 			}
-			return f.firewall.apply(ctx, authorization, cohort)
+			return f.firewall.apply(ctx, authorization, classification)
 		}
 		engine := f.engine(t, options)
 		if receipt, err := engine.Process(t.Context(), f.directory); err != nil || receipt.Status != ipc.StatusApplied {

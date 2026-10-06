@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/mikenorgate/router-policy-agent/internal/binding"
@@ -34,15 +33,17 @@ type Persistence struct {
 
 // Enforcement is trusted helper wiring, never reader-supplied implementation.
 // Seal removes owned application permits and retains closed classification of
-// both existing and supplied cohort members, without touching unrelated rules.
+// both existing and supplied MAC/address classifiers, without touching unrelated
+// rules. An empty handoff must never flush existing classification. Before
+// traffic is admitted at boot the backend must restore all supplied classifiers.
 // Apply must atomically replace owned tuples, preserve the closed cohort and
 // enforce absolute kernel deadlines, the floor and mapping-generation checks.
 // It must retain Authorization's original age anchor, not rebuild a lifetime
 // from its diagnostic snapshot or a newly sampled UTC clock.
 // A successful callback is not itself packet-level evidence of those properties.
 type Enforcement struct {
-	Seal  func(context.Context, []string) error
-	Apply func(context.Context, policy.Authorization, []string) error
+	Seal  func(context.Context, state.Classification) error
+	Apply func(context.Context, policy.Authorization, state.Classification) error
 }
 
 // Options contains privileged local dependencies. Bindings must reread an
@@ -103,7 +104,7 @@ func (engine *Engine) Start(ctx context.Context) error {
 	}
 	defer engine.release()
 	engine.started = false
-	if err := engine.seal(ctx, nil); err != nil {
+	if err := engine.seal(ctx, state.EmptyClassification()); err != nil {
 		return err
 	}
 	document, err := engine.options.State.Load(ctx)
@@ -114,7 +115,11 @@ func (engine *Engine) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := engine.seal(ctx, document.CohortMACs); err != nil {
+	classification, err := state.Classifiers(document)
+	if err != nil {
+		return err
+	}
+	if err := engine.seal(ctx, classification); err != nil {
 		return err
 	}
 	now, err := engine.now()
@@ -135,7 +140,8 @@ func (engine *Engine) Start(ctx context.Context) error {
 
 // Process is the authenticated IPC callback. It observes and saves the complete
 // directory watermark/cohort before collecting bindings, then independently
-// compiles and durably saves deadline/alias anchors before application. Failures
+// persists deny-only address history independently of grants, then compiles and
+// durably saves deadline/alias anchors before application. Failures
 // cannot renew a lease or restore older directory decisions. In enforce mode
 // they trigger bounded permit removal, even if the request has been canceled.
 func (engine *Engine) Process(
@@ -149,13 +155,13 @@ func (engine *Engine) Process(
 	if !engine.started {
 		return ipc.Receipt{}, errors.New("agent: helper is not started")
 	}
-	var cohort []string
+	classification := state.EmptyClassification()
 	defer func() {
 		if result != nil {
 			receipt = ipc.Receipt{}
 			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 			defer cancel()
-			if err := engine.seal(cleanup, cohort); err != nil {
+			if err := engine.seal(cleanup, classification); err != nil {
 				engine.started = false
 				result = errors.Join(result, err)
 			}
@@ -169,7 +175,10 @@ func (engine *Engine) Process(
 	if err != nil {
 		return ipc.Receipt{}, err
 	}
-	cohort = document.CohortMACs
+	classification, err = state.Classifiers(document)
+	if err != nil {
+		return ipc.Receipt{}, err
+	}
 	if _, err := state.CheckDirectory(document, snapshot); err != nil {
 		return ipc.Receipt{}, err
 	}
@@ -190,7 +199,10 @@ func (engine *Engine) Process(
 	if err != nil {
 		return ipc.Receipt{}, err
 	}
-	cohort = observed.CohortMACs
+	classification, err = state.Classifiers(observed)
+	if err != nil {
+		return ipc.Receipt{}, err
+	}
 	if err := engine.options.State.Save(ctx, observed); err != nil {
 		return ipc.Receipt{}, fmt.Errorf("agent: persist observation: %w", err)
 	}
@@ -208,6 +220,28 @@ func (engine *Engine) Process(
 		return ipc.Receipt{}, err
 	}
 	if err := engine.checkStartupBindings(ctx, bindings); err != nil {
+		return ipc.Receipt{}, err
+	}
+	addresses, err := engine.compiler.ClassifyBindings(ctx, bindings, classification.MACs, now.utc)
+	if err != nil {
+		return ipc.Receipt{}, err
+	}
+	observed, err = state.RememberAddresses(observed, addresses)
+	if err != nil {
+		return ipc.Receipt{}, err
+	}
+	classification, err = state.Classifiers(observed)
+	if err != nil {
+		return ipc.Receipt{}, err
+	}
+	// Persist deny-only address history before compilation can fail, even for
+	// inactive, removed or zero-grant identities. Failure cleanup still receives
+	// these new classifiers if a save renamed the state before reporting failure.
+	if err := engine.options.State.Save(ctx, observed); err != nil {
+		return ipc.Receipt{}, fmt.Errorf("agent: persist address classification: %w", err)
+	}
+	now, err = engine.now()
+	if err != nil {
 		return ipc.Receipt{}, err
 	}
 	authorization, err := engine.compiler.CompileAuthorization(ctx, policy.Input{
@@ -241,7 +275,11 @@ func (engine *Engine) Process(
 	}
 	status := ipc.StatusShadow
 	if engine.options.Mode == Enforce {
-		if err := engine.options.Firewall.Apply(ctx, authorization, slices.Clone(cohort)); err != nil {
+		owned, err := state.CloneClassification(classification)
+		if err != nil {
+			return ipc.Receipt{}, err
+		}
+		if err := engine.options.Firewall.Apply(ctx, authorization, owned); err != nil {
 			return ipc.Receipt{}, fmt.Errorf("agent: apply owned policy: %w", err)
 		}
 		status = ipc.StatusApplied
@@ -281,14 +319,18 @@ func (engine *Engine) Stop(ctx context.Context) error {
 	}
 	defer engine.release()
 	engine.started = false
-	return engine.seal(ctx, nil)
+	return engine.seal(ctx, state.EmptyClassification())
 }
 
-func (engine *Engine) seal(ctx context.Context, cohort []string) error {
+func (engine *Engine) seal(ctx context.Context, classification state.Classification) error {
 	if engine.options.Mode == Shadow {
 		return nil
 	}
-	return engine.options.Firewall.Seal(ctx, slices.Clone(cohort))
+	owned, err := state.CloneClassification(classification)
+	if err != nil {
+		return err
+	}
+	return engine.options.Firewall.Seal(ctx, owned)
 }
 
 func (engine *Engine) acquire(ctx context.Context) error {

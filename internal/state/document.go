@@ -21,10 +21,13 @@ const maximumCohort = 4096
 
 // Document is helper-owned security state. Losing a directory account or a
 // binding must not remove its cohort classification and expose legacy allows.
+// ClassifiedIPv4/IPv6 are historical deny-only representations, not ownership.
 // DirectoryHash binds an observation time to exactly one complete snapshot.
 type Document struct {
 	SchemaVersion           int           `json:"schema_version"`
 	CohortMACs              []string      `json:"cohort_macs"`
+	ClassifiedIPv4          []string      `json:"classified_ipv4"`
+	ClassifiedIPv6          []string      `json:"classified_ipv6"`
 	Ledger                  policy.Ledger `json:"ledger"`
 	LastDirectoryObservedAt time.Time     `json:"last_directory_observed_at"`
 	DirectoryHash           string        `json:"directory_hash"`
@@ -33,29 +36,33 @@ type Document struct {
 // Initial is for explicit first installation, not automatic recovery after
 // missing or corrupt state. Runtime startup must not silently call it.
 func Initial() Document {
-	return Document{SchemaVersion: 1, CohortMACs: []string{}, Ledger: policy.Ledger{
-		FirstSeen: map[string]time.Time{}, AliasPeers: map[string]netip.Addr{}, NetworkGroups: map[string]bool{},
-	}}
+	return Document{
+		SchemaVersion: 2, CohortMACs: []string{}, ClassifiedIPv4: []string{}, ClassifiedIPv6: []string{},
+		Ledger: policy.Ledger{
+			FirstSeen: map[string]time.Time{}, AliasPeers: map[string]netip.Addr{}, NetworkGroups: map[string]bool{},
+		},
+	}
 }
 
 // Clone validates the bounded state and returns independently owned data.
 func Clone(document Document) (Document, error) {
-	if document.SchemaVersion != 1 || document.CohortMACs == nil || len(document.CohortMACs) > maximumCohort {
-		return Document{}, errors.New("state: invalid schema or cohort quota")
+	if document.SchemaVersion != 2 {
+		return Document{}, errors.New("state: unsupported durable schema")
+	}
+	classification, err := CloneClassification(Classification{
+		MACs: document.CohortMACs, IPv4: document.ClassifiedIPv4, IPv6: document.ClassifiedIPv6,
+	})
+	if err != nil {
+		return Document{}, err
 	}
 	ledger, err := policy.CloneLedger(document.Ledger)
 	if err != nil {
 		return Document{}, err
 	}
-	cohort := slices.Clone(document.CohortMACs)
-	for index, mac := range cohort {
-		canonical, err := policy.CanonicalMAC(mac)
-		if err != nil || canonical != mac || index > 0 && cohort[index-1] >= mac {
-			return Document{}, errors.New("state: cohort must be canonical, sorted and unique")
-		}
-	}
+	cohort := classification.MACs
 	if document.LastDirectoryObservedAt.IsZero() {
-		if document.DirectoryHash != "" || !ledger.LastValidated.IsZero() || len(cohort) != 0 {
+		hasClassification := len(cohort)+len(classification.IPv4)+len(classification.IPv6) != 0
+		if document.DirectoryHash != "" || !ledger.LastValidated.IsZero() || hasClassification {
 			return Document{}, errors.New("state: inconsistent initial observation")
 		}
 	} else {
@@ -65,14 +72,16 @@ func Clone(document Document) (Document, error) {
 			return Document{}, errors.New("state: inconsistent directory watermark")
 		}
 	}
-	return Document{SchemaVersion: 1, CohortMACs: cohort, Ledger: ledger,
+	return Document{SchemaVersion: 2, CohortMACs: cohort,
+		ClassifiedIPv4: classification.IPv4, ClassifiedIPv6: classification.IPv6, Ledger: ledger,
 		LastDirectoryObservedAt: document.LastDirectoryObservedAt, DirectoryHash: document.DirectoryHash}, nil
 }
 
 // Decode requires exact keys and valid durable state, without reader-controlled
-// commands, paths, bindings or persisted firewall grants.
+// commands, paths, current ownership claims or persisted firewall grants.
 func Decode(data []byte) (Document, error) {
-	keys := []string{"schema_version", "cohort_macs", "ledger", "last_directory_observed_at", "directory_hash"}
+	keys := []string{"schema_version", "cohort_macs", "classified_ipv4", "classified_ipv6",
+		"ledger", "last_directory_observed_at", "directory_hash"}
 	if err := strictjson.Object(data, keys, nil, MaximumSize); err != nil {
 		return Document{}, err
 	}
@@ -127,7 +136,8 @@ func Advance(document Document, snapshot policy.DirectorySnapshot, ledger policy
 	}
 	slices.Sort(cohort)
 	cohort = slices.Compact(cohort)
-	result, err := Clone(Document{SchemaVersion: 1, CohortMACs: cohort, Ledger: ledger,
+	result, err := Clone(Document{SchemaVersion: 2, CohortMACs: cohort,
+		ClassifiedIPv4: document.ClassifiedIPv4, ClassifiedIPv6: document.ClassifiedIPv6, Ledger: ledger,
 		LastDirectoryObservedAt: snapshot.ObservedAt, DirectoryHash: hash})
 	if err != nil {
 		return Document{}, err
@@ -157,6 +167,17 @@ func CheckTransition(previous, next Document) error {
 	for _, mac := range previous.CohortMACs {
 		if _, exists := slices.BinarySearch(next.CohortMACs, mac); !exists {
 			return errors.New("state: managed cohort cannot shrink")
+		}
+	}
+	for family, addresses := range [][]string{previous.ClassifiedIPv4, previous.ClassifiedIPv6} {
+		nextAddresses := next.ClassifiedIPv4
+		if family == 1 {
+			nextAddresses = next.ClassifiedIPv6
+		}
+		for _, address := range addresses {
+			if _, exists := slices.BinarySearch(nextAddresses, address); !exists {
+				return errors.New("state: historical address classification cannot shrink")
+			}
 		}
 	}
 	for key, first := range previous.Ledger.FirstSeen {

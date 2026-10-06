@@ -55,7 +55,7 @@ func TestStoreRestartAndExclusiveLock(t *testing.T) {
 	if err := store.Initialize(t.Context()); err == nil {
 		t.Fatal("state was reinitialized")
 	}
-	if err := store.Save(t.Context(), advanced(t)); err != nil {
+	if err := store.Save(t.Context(), classified(t)); err != nil {
 		t.Fatal(err)
 	}
 	if second, err := Open(t.Context(), options); err == nil {
@@ -74,6 +74,10 @@ func TestStoreRestartAndExclusiveLock(t *testing.T) {
 	}
 	if len(document.CohortMACs) != 1 || !document.Ledger.FirstSeen["group/rule"].Equal(observed) {
 		t.Fatal("restart erased guarded identity or expiry")
+	}
+	if len(document.ClassifiedIPv4) != 1 || document.ClassifiedIPv4[0] != "10.240.3.10" ||
+		len(document.ClassifiedIPv6) != 1 || document.ClassifiedIPv6[0] != "fdca:1a2b:3::10" {
+		t.Fatal("durable store restart erased deny-only address history")
 	}
 	older := snapshot()
 	older.ObservedAt = observed.Add(-1)
@@ -104,6 +108,11 @@ func TestStoreFailureDoesNotReset(t *testing.T) {
 	}{
 		{name: "corrupt state", mutate: func(t *testing.T, options Options) {
 			if err := os.WriteFile(filepath.Join(options.Directory, filename), []byte("{"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "pre-history state schema", mutate: func(t *testing.T, options Options) {
+			if err := os.WriteFile(filepath.Join(options.Directory, filename), []byte(`{"schema_version":1}`), 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}},

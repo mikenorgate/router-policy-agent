@@ -36,7 +36,12 @@ In enforce mode, startup clears application permits before reading existing stat
 missing or unsafe state never triggers initialization. Each complete directory
 observation's watermark and managed cohort are saved before collecting bindings.
 A newer denial therefore cannot be replaced by an older allow if binding
-collection fails. Compilation saves immutable expiry/alias anchors before
+collection fails. After fresh binding validation, the helper derives native
+and available NAT device classifiers against its own geometry and saves that
+deny-only history before compilation. This includes inactive, removed and
+zero-grant managed devices with current qualified Untrusted bindings; unrelated
+or unqualified bindings contribute no addresses. Compilation saves immutable
+expiry/alias anchors before
 calling the backend. On failure, enforce mode attempts permit removal with an
 independent two-second deadline. Cleanup can outlive a canceled request by that
 bounded interval; failed cleanup requires a new successful closed startup.
@@ -73,6 +78,17 @@ the callbacks do not yet wire them into a guarded backend. No executable
 currently wires these components together; qualified binding collection,
 kernel enforcement, translation coordination and packaging remain unfinished.
 
+Both callbacks receive independently owned `state.Classification` slices for
+MACs, IPv4 and IPv6. `Seal` must clear only owned permits and union these
+classifiers into the existing guard; an empty startup/stop handoff must not
+flush historical classification. Startup passes all validated persisted
+classifiers before accepting requests. A failed restore prevents startup.
+Failure cleanup also supplies newly observed classifiers if their durable
+write failed, including failure after rename. The signed boot path must still
+prevent traffic before restoration, and a restricted guarded writer must
+implement and qualify this contract. Memory-backed helper tests prove the
+handoff and ordering, not cold-boot packet protection.
+
 Responses contain only schema, shadow/applied/rejected status, a fixed error
 code, baseline hash, compilation time and grant/denial counts. The maximum
 response is 64 KiB. Backend error text never becomes a response. A `shadow`
@@ -80,7 +96,8 @@ receipt is not permission and does not prove a kernel transaction occurred.
 
 ## State contract
 
-`internal/state` stores only the managed MAC cohort, temporary-rule first-seen
+`internal/state` stores only the managed MAC cohort, historical device-address
+classifiers, temporary-rule first-seen
 times, alias ownership anchors, known network-group IDs, validated clock and
 last complete directory timestamp/digest. It does not store credentials, raw
 directory records or renewable grants.
@@ -102,10 +119,28 @@ An older directory snapshot cannot restore a permit after a newer denial;
 conflicting content at the same observation time also rejects. Repeating an
 identical snapshot retains its original observation time and lease.
 
-This durable MAC list still needs a kernel guard and qualified address ownership.
+State schema 2 requires explicit `classified_ipv4` and `classified_ipv6` arrays.
+All classifiers are canonical, sorted and unique, bounded to 4,096 MACs and
+16,384 addresses per family. Addresses cannot exist without a managed cohort.
+Normal updates cannot shrink either family's history; capacity exhaustion
+rejects instead of evicting old guards. The helper stores deny-only history,
+not address-to-MAC ownership claims. IP reuse needs independently fresh
+ownership before a new managed occupant can receive a permit; an unmanaged
+occupant cannot use saved history as authorization. Retiring old classifiers
+requires a separate reviewed recovery operation, not a reader request.
+
+Schema 1 is rejected. It cannot recover missing historical addresses and is
+not automatically converted to empty arrays. Its presence is an unsafe-state
+error, not the missing-state initialization condition; installation cannot
+silently overwrite it. A future upgrade/recovery workflow must reconstruct and
+verify classification while traffic remains closed, retaining original state
+and authorization anchors. No runtime upgrade tool is supplied yet.
+
+This durable history still needs a qualified kernel backend and boot ordering.
 It does not protect incoming traffic or IP reuse by itself. The helper must
 install closed classification before accepting traffic and must persist anchors
-before permitting a new candidate.
+before permitting a new candidate. In particular, bindings with no application
+grant must remain closed rather than becoming unmanaged after restart.
 
 ## Restricted nftables primitives
 
