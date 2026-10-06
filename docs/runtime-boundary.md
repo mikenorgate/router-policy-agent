@@ -117,10 +117,54 @@ apply those transactions. The signed boot path must still prevent traffic before
 restoration. Helper tests prove the handoff and ordering; isolated kernel tests
 exercise the restore transactions, not production cold-boot packet protection.
 
-Responses contain only schema, shadow/applied/rejected status, a fixed error
+Directory responses contain only schema, shadow/applied/rejected status, a fixed error
 code, baseline hash, compilation time and grant/denial counts. The maximum
 response is 64 KiB. Backend error text never becomes a response. A `shadow`
 receipt is not permission and does not prove a kernel transaction occurred.
+
+### Read-only operator status
+
+The status server uses a separate supervisor-owned Unix socket and a distinct
+non-root operator UID. The guarded service rejects root and its directory-reader
+UID for that role. Both sides verify filesystem ownership and `SO_PEERCRED`.
+Socket-group membership does not grant either UID's authority. The supervisor
+must cancel and join the status server before closing backend/store resources.
+
+Its only request is `{"schema_version":1,"operation":"status"}`, bounded to
+512 bytes. A directory submission, reset, extra field or other operation cannot
+reach either processor. Responses are bounded to 64 KiB and contain no raw
+directory attributes, device IDs/MACs/addresses, policy reasons, file paths or
+backend error text. Contributor group/rule IDs are limited to 128 distinct
+pairs with explicit truncation; fixed denial codes are deduplicated. Those IDs
+are operator diagnostics and must remain in private operational logs.
+
+The engine copies cached successful-decision diagnostics under its transaction
+gate. Querying status does not load/save state, read bindings, advance its clock,
+seal or apply. Countdown calculation clips UTC expiry by the original elapsed
+lifetime. Expired grants disappear from the remaining count without pretending
+that a new application occurred. A rollback/missing clock reports `unverified`
+and no countdown. `usable` describes this local check, not synchronized-UTC
+qualification. Successful sealing clears local countdowns; failed sealing says
+`unknown`, never claims that permits were removed, and preserves the last
+successful decision for diagnosis. Shadow status never claims an actual apply.
+
+The backend separately acquires the existing writer fence and reads the complete
+ruleset through its checked executor. A matching ready generation and exact
+paired contract produce `matches_pinned_contract`, a writer sequence and the
+observed logical lease-set tuple count. Closed/changed generations, drift or
+inspection failure produce `unverified` with no kernel count/sequence. This
+query never repairs a floor, changes metadata or revokes/renews a permit.
+Engine diagnostics and kernel inspection are separate observations, not an
+atomic authorization view; a later writer may invalidate them. Matching objects
+do not establish P01–P10 semantics or translated forwarding.
+
+`router-policy-status` is the read-only Linux CLI for this protocol. It requires
+an explicit clean absolute socket path, pins the expected helper UID, has one
+bounded attempt and prints validated JSON. Exit 0 means a valid report, even
+when unhealthy; 1 is query/output failure and 2 is invalid usage. No current
+executable enables either service socket. Isolated tests qualify real operator
+and writer UIDs, rejection of writes, expiry/rollback and actual backend queries
+without modifying state or the drifted external floor.
 
 ## State contract
 

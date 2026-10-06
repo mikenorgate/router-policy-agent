@@ -34,6 +34,8 @@ type serviceOptions struct {
 type guardedService struct {
 	engine    *agent.Engine
 	server    *ipc.Server
+	backend   *guardedBackend
+	readerUID uint32
 	hasServed atomic.Bool
 }
 
@@ -68,7 +70,7 @@ func (b *guardedBackend) newService(options serviceOptions) (*guardedService, er
 	if err != nil {
 		return nil, err
 	}
-	return &guardedService{engine: engine, server: server}, nil
+	return &guardedService{engine: engine, server: server, backend: b, readerUID: options.readerUID}, nil
 }
 
 // serve adopts a supervisor-created listener only for the first valid root

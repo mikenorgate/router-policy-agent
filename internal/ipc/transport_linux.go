@@ -35,6 +35,7 @@ type ServerOptions struct {
 type Server struct {
 	options ServerOptions
 	process ProcessFunc
+	report  ReportFunc
 }
 
 // NewServer rejects missing processors and timeouts outside the ten-second cap.
@@ -51,8 +52,11 @@ func NewServer(options ServerOptions, process ProcessFunc) (*Server, error) {
 // Cancellation closes and joins the listener interruption; each connection is
 // authenticated before reading its frame and has one bounded request lifetime.
 func (s *Server) Serve(ctx context.Context, listener *net.UnixListener) (result error) {
-	if ctx == nil || s == nil || listener == nil || s.process == nil || s.options.Timeout <= 0 {
+	if ctx == nil || s == nil || listener == nil || s.options.Timeout <= 0 {
 		return errors.New("ipc: invalid server or listener")
+	}
+	if (s.process == nil) == (s.report == nil) {
+		return errors.New("ipc: server requires exactly one operation")
 	}
 	defer func() { result = errors.Join(result, closeExpected(listener)) }()
 	uid, err := currentUID()
@@ -98,6 +102,9 @@ func (s *Server) serveConnection(ctx context.Context, connection *net.UnixConn) 
 	}
 	stop := interrupt(ctx, connection)
 	defer func() { result = errors.Join(result, stop()) }()
+	if s.report != nil {
+		return s.serveStatus(ctx, connection)
+	}
 	data, err := readFrame(connection, maximumRequest)
 	if err != nil {
 		return err

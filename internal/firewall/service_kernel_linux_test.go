@@ -187,6 +187,119 @@ func TestKernelGuardedServiceAuthenticatedLifecycle(t *testing.T) {
 	}
 }
 
+func TestKernelGuardedServiceStatusReadOnly(t *testing.T) {
+	requireKernelIsolation(t)
+	t.Cleanup(func() { requireKernelIsolation(t) })
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	backend, writerRoot := setupBackendPacketFixture(ctx, t)
+	directory, store := serviceKernelStore(ctx, t)
+	if err := store.Initialize(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var bindings binding.Snapshot
+	var reads atomic.Int32
+	service, err := backend.newService(serviceOptions{
+		state:     agent.Persistence{Load: store.Load, Save: store.Save},
+		bindings:  func(context.Context) (binding.Snapshot, error) { reads.Add(1); return bindings, nil },
+		readerUID: 65534, requestTimeout: 10 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.engine.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cleanup, stop := context.WithTimeout(context.WithoutCancel(t.Context()), 2*time.Second)
+		defer stop()
+		if err := service.engine.Stop(cleanup); err != nil {
+			t.Error(err)
+		}
+	})
+	input := backendInputFixture(t, 0)
+	bindings = input.Bindings
+	if _, err := service.engine.Process(ctx, input.Directory); err != nil {
+		t.Fatal(err)
+	}
+	before, err := store.Load(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	history, err := state.Classifiers(before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener := serviceKernelListener(t, directory, "status.sock")
+	server, err := service.newStatusServer(65533, 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	var worker sync.WaitGroup
+	result := make(chan error, 1)
+	worker.Go(func() { result <- server.Serve(serveCtx, listener) })
+	t.Cleanup(func() {
+		stop()
+		worker.Wait()
+		if err := <-result; !errors.Is(err, context.Canceled) {
+			t.Error(err)
+		}
+	})
+	executable := serviceReaderExecutable(t, directory)
+	query := func(expected string) {
+		t.Helper()
+		// #nosec G204 -- The fixed child entry point belongs to this test executable.
+		command := exec.CommandContext(ctx, executable, "-test.run=^TestGuardedServiceStatusProcess$")
+		command.Env = []string{"RPA_SERVICE_STATUS_CHILD=1", "RPA_SERVICE_STATUS_SOCKET=" + listener.Addr().String(),
+			"RPA_SERVICE_STATUS_EXPECTED=" + expected}
+		command.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: 65533, Gid: 0, NoSetGroups: true}}
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("actual read-only status client: %v: %s", err, output)
+		}
+	}
+	query("matches_pinned_contract")
+	closed := backend.options.expected
+	closed.Ready = false
+	writeGenerationFixture(t, writerRoot, closed)
+	query("unverified")
+	writeGenerationFixture(t, writerRoot, backend.options.expected)
+	packetNft(ctx, t, "insert rule inet reviewed_floor forward accept")
+	changedFloor := kernelFixtureCommand(ctx, t, "list", "table", "inet", "reviewed_floor")
+	query("unverified")
+	if !bytes.Equal(changedFloor, kernelFixtureCommand(ctx, t, "list", "table", "inet", "reviewed_floor")) {
+		t.Fatal("status inspection repaired an external floor")
+	}
+	assertClassifiedGuardInventory(ctx, t, backend.options.executor, backend.options.profile.layout, history, true)
+	after, err := store.Load(ctx)
+	if err != nil || after.DirectoryHash != before.DirectoryHash || reads.Load() != 1 {
+		t.Fatal("status query changed durable authorization or collected ownership evidence")
+	}
+}
+
+func TestGuardedServiceStatusProcess(t *testing.T) {
+	if os.Getenv("RPA_SERVICE_STATUS_CHILD") != "1" {
+		t.Skip("subprocess entry point")
+	}
+	if os.Geteuid() != 65533 {
+		t.Fatal("status reader did not drop to the separate operator uid")
+	}
+	report, err := ipc.ReadStatus(t.Context(), ipc.ClientOptions{
+		Socket: os.Getenv("RPA_SERVICE_STATUS_SOCKET"), ServerUID: 0, Timeout: 10 * time.Second,
+	})
+	if err != nil || report.FloorState != os.Getenv("RPA_SERVICE_STATUS_EXPECTED") || report.LastGrantCount == 0 {
+		t.Fatalf("status evidence mismatch: %v", err)
+	}
+	if report.FloorState == "unverified" && (report.KernelTupleCount != nil || report.WriterSequence != nil) {
+		t.Fatal("failed inspection claimed verified kernel evidence")
+	}
+	if report.FloorState == "matches_pinned_contract" &&
+		(report.KernelTupleCount == nil || *report.KernelTupleCount == 0 || report.WriterSequence == nil) {
+		t.Fatal("matching contract lacked actual kernel evidence")
+	}
+}
+
 func TestKernelGuardedServiceFailedStartupRetainsClosure(t *testing.T) {
 	for _, name := range []string{"missing state", "corrupt state", "canceled with cleanup failure"} {
 		t.Run(name, func(t *testing.T) {

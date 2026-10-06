@@ -58,6 +58,7 @@ fuzz:
 	$(GO) test ./internal/state -run '^$$' -fuzz FuzzDecode -fuzztime 10s
 	$(GO) test ./internal/ipc -run '^$$' -fuzz FuzzRequest -fuzztime 10s
 	$(GO) test ./internal/ipc -run '^$$' -fuzz FuzzFrame -fuzztime 10s
+	$(GO) test ./internal/ipc -run '^$$' -fuzz FuzzStatus -fuzztime 10s
 	$(GO) test ./internal/firewall -run '^$$' -fuzz FuzzBatch -fuzztime 10s
 	$(GO) test ./internal/firewall -run '^$$' -fuzz FuzzInventory -fuzztime 10s
 	$(GO) test ./internal/firewall -run '^$$' -fuzz FuzzGuardInspection -fuzztime 10s

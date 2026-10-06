@@ -72,6 +72,7 @@ type Engine struct {
 	maximumDevices   int
 	startupTime      time.Time
 	startupDirectory time.Time
+	observation      observation
 }
 
 // New copies and validates the helper-owned baseline. Shadow mode rejects
@@ -91,6 +92,11 @@ func New(baseline policy.Baseline, options Options) (*Engine, error) {
 	return &Engine{
 		compiler: compiler, options: options, gate: make(chan struct{}, 1),
 		lease: time.Duration(baseline.LeaseSeconds) * time.Second, maximumDevices: baseline.MaximumDevices,
+		observation: observation{report: ipc.Report{
+			SchemaVersion: 1, Mode: string(options.Mode), HelperState: "not_started", PermitState: "unobserved",
+			BaselineHash: compiler.BaselineHash(), BaselineGeneration: baseline.Generation,
+			Rules: []ipc.RuleReference{}, DenialCodes: []string{}, ClockState: "unverified", FloorState: "unverified",
+		}},
 	}, nil
 }
 
@@ -104,6 +110,8 @@ func (engine *Engine) Start(ctx context.Context) error {
 	}
 	defer engine.release()
 	engine.started = false
+	engine.observation.report.HelperState = "startup_failed"
+	engine.observation.report.LastFailure = "startup_failed"
 	if err := engine.seal(ctx, state.EmptyClassification()); err != nil {
 		return err
 	}
@@ -133,6 +141,8 @@ func (engine *Engine) Start(ctx context.Context) error {
 		return err
 	}
 	engine.started = true
+	engine.observation.report.HelperState = "ready"
+	engine.observation.report.LastFailure = ""
 	engine.startupTime = now.authorization
 	engine.startupDirectory = document.LastDirectoryObservedAt
 	return nil
@@ -159,10 +169,12 @@ func (engine *Engine) Process(
 	defer func() {
 		if result != nil {
 			receipt = ipc.Receipt{}
+			engine.observation.report.LastFailure = "processing_failed"
 			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 			defer cancel()
 			if err := engine.seal(cleanup, classification); err != nil {
 				engine.started = false
+				engine.observation.report.HelperState = "failed"
 				result = errors.Join(result, err)
 			}
 		}
@@ -287,6 +299,7 @@ func (engine *Engine) Process(
 	if err := ctx.Err(); err != nil {
 		return ipc.Receipt{}, err
 	}
+	engine.rememberDecision(candidate, authorization, snapshot.ObservedAt, len(bindings.Records))
 	return ipc.Receipt{SchemaVersion: 1, Status: status, BaselineHash: candidate.BaselineHash,
 		CompiledAt: candidate.CompiledAt, GrantCount: len(candidate.Grants), DenialCount: len(candidate.Denials)}, nil
 }
@@ -319,18 +332,31 @@ func (engine *Engine) Stop(ctx context.Context) error {
 	}
 	defer engine.release()
 	engine.started = false
+	engine.observation.report.HelperState = "stopped"
 	return engine.seal(ctx, state.EmptyClassification())
 }
 
 func (engine *Engine) seal(ctx context.Context, classification state.Classification) error {
 	if engine.options.Mode == Shadow {
+		engine.observation.deadlines = []countdown{}
+		engine.observation.report.PermitState = "shadow"
 		return nil
 	}
 	owned, err := state.CloneClassification(classification)
 	if err != nil {
 		return err
 	}
-	return engine.options.Firewall.Seal(ctx, owned)
+	if err := engine.options.Firewall.Seal(ctx, owned); err != nil {
+		engine.observation.report.PermitState = "unknown"
+		engine.observation.report.LastFailure = "seal_failed"
+		// A failed removal gives no reliable local countdown for possible kernel
+		// state, including an application that committed before reporting failure.
+		engine.observation.deadlines = []countdown{}
+		return err
+	}
+	engine.observation.report.PermitState = "sealed"
+	engine.observation.deadlines = []countdown{}
+	return nil
 }
 
 func (engine *Engine) acquire(ctx context.Context) error {

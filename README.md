@@ -24,6 +24,21 @@ make build
 
 The synthetic example produces one TCP/6053 permission from a Trusted controller to an Untrusted device. The `-at` option is for offline fixtures only; it does not authorize changing a production clock. The checker prints JSON to stdout, diagnostics to stderr, and never changes networking or router state. Exit codes are 0 for a completed compilation (including device denials), 1 for an invalid snapshot/runtime failure, and 2 for incorrect arguments.
 
+`router-policy-status` is a Linux-only, read-only client for a separately
+authorized helper socket. `-socket` is required; `-server-uid` defaults to root
+and is verified through kernel peer credentials. `-timeout` defaults to two
+seconds and cannot exceed ten seconds. `-help` lists these options. No installed
+helper/socket is supplied yet, so the client is currently qualified in isolated
+tests rather than a production deployment. It does not start a helper, request
+sudo, submit directory data or refresh authorization.
+
+Status separates the last successful decision, conservative lease countdowns
+and a fresh fenced kernel inspection. Failed inspection reports `unverified`;
+`matches_pinned_contract` means the observed objects match the paired contract,
+not that its protected-policy semantics or translated paths are qualified.
+JSON goes to stdout and fixed diagnostics to stderr. Exit 0 means a valid report,
+including unhealthy/unverified state; it is not a firewall health verdict.
+
 Source installation is also available:
 
 ```sh
