@@ -281,8 +281,9 @@ activate. Deployment paths, hashes and records remain private configuration.
 `schema_version: 1` and an `objects` array. This is not the native `nftables`
 listing envelope. Artifacts cannot contain runtime handles, counter statistics
 or helper-owned objects. The decoder limits input to 4 MiB and 8,192 objects;
-it neither loads a file nor authenticates who supplied those bytes. A future
-trusted loader must check image/projection provenance and ownership. Reader IPC
+it neither loads a file nor authenticates who supplied those bytes. The paired
+[profile loader](#pinned-router-profile-loading) checks ownership and an
+independently supplied digest; release/pin provenance remains required. Reader IPC
 must never carry this artifact. There is no command for learning an expected
 contract from the live router.
 
@@ -318,9 +319,48 @@ data coordinated with their owning generation; an observed replacement must
 not become its own expectation.
 
 The isolated fixture verifies drift detection and lack of mutation. It is not
-the deployment's P01–P10 projection or packet qualification. Authenticated
-projection loading, independent protection/caller-path checks, writer adapters,
+the deployment's P01–P10 projection or packet qualification. Release/pin
+provenance, independent protection/caller-path checks, writer adapters,
 guarded mutation wiring and actual translator-state verification remain required.
+
+## Pinned router profile loading
+
+`loadRouterProfile` is privileged library plumbing, not an activated service.
+It reads only `profile.json` from a clean absolute, root-owned private directory.
+The file must be a root-owned regular file with one link and mode `0600` or
+`0400`. Symlinks, hard links, special files, unsafe ancestors/permissions and
+oversized files reject before decoding. Read size is capped at 8 MiB, metadata
+is checked again after reading, and every descriptor closes before return.
+Cancellation or any failure returns no partial profile. Printable diagnostics
+omit private paths and payloads; trusted callers can still inspect error causes.
+
+The exact bundle schema has `schema_version: 1`, `baseline` and
+`reviewed_ruleset`. Nested schemas keep their own tighter limits. Duplicate,
+unknown, case-variant or null fields reject. One validated baseline constructs
+the immutable compiler/renderer and guard layout; the paired reviewed artifact
+supplies the surrounding object contract. Profile inspection uses only those
+paired components and the existing fixed read-only executable operation.
+
+| Identity | What it binds |
+| --- | --- |
+| Image-owned profile pin | Exact serialized bundle bytes, including the catalog and object contract |
+| Compiler baseline hash | Validated normalized compiler configuration |
+| Observed ruleset hash | Verified normalized surrounding nftables program; helper inventory is checked separately |
+
+The caller must obtain the canonical SHA-256 pin independently from the
+verified owning release. Ownership and a checksum supplied beside mutable
+profile bytes do not authenticate that release. The loader does not verify
+image signatures, learn pins from live state, accept a self-declared digest,
+or treat a generation record as provenance. Even equivalent JSON formatting
+requires the correct independently supplied pin.
+
+Isolated tests load a root-owned synthetic bundle, inspect real nftables
+objects, reject another bundle's guard layout and detect early-accept drift
+without changing the firewall. They do not prove that the catalog matches
+every P01–P10 packet path. Private projection generation, release/pin
+distribution, semantic/packet review, shared writer fencing, translator-state
+verification and actual runtime wiring remain required. Production bundles,
+pins, endpoint catalogs and evidence stay outside this public repository.
 
 ## Packet-field qualification
 

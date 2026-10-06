@@ -14,3 +14,7 @@
 /credentials/
 /runtime/
 /local/
+/profile.json
+/baseline.json
+/bindings.json
+/directory.json

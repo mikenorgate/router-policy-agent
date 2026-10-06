@@ -76,7 +76,10 @@ order, protected sets, mappings and hooks reject without changing any objects.
 This comparison does not establish that the contract implements P01–P10. The
 image-policy owner must derive and authenticate the private projection, map
 every protection to its enforcing paths and qualify those paths with packets.
-Neither a complete listing nor a matching hash may bootstrap that expected
-policy. Actual writers, the generation fence, permitting paths, translator
-identity and boot restoration are still integration gates. See the
+The root-owned profile loader binds the compiler catalog and object contract
+to one independently supplied image pin. It keeps guard inspection paired
+with that catalog; it does not authenticate the owning release or establish
+P01–P10 semantics. Neither a complete listing nor a matching hash may bootstrap
+that expected policy. Actual writers, the generation fence, permitting paths,
+translator identity and boot restoration are still integration gates. See the
 [comparison contract and limits](runtime-boundary.md#reviewed-ruleset-comparison).
