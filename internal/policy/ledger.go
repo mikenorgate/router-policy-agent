@@ -10,6 +10,44 @@ import (
 
 const maximumLedgerEntries = 65536
 
+// ledgerEdits tracks only additions made for one device. The whole input ledger
+// is copied once; a denied device rolls back its additions without repeatedly
+// cloning and validating up to 65,536 entries for every managed device.
+type ledgerEdits struct {
+	ledger    *Ledger
+	firstSeen []string
+	aliases   []string
+}
+
+func (edits *ledgerEdits) ruleExpiry(groupID string, rule Rule, input Input, leaseSeconds int) (time.Time, error) {
+	key := groupID + "/" + rule.ID
+	_, existed := edits.ledger.FirstSeen[key]
+	expires, err := ruleExpiry(groupID, rule, input, edits.ledger, leaseSeconds)
+	if _, exists := edits.ledger.FirstSeen[key]; !existed && exists {
+		edits.firstSeen = append(edits.firstSeen, key)
+	}
+	return expires, err
+}
+
+func (edits *ledgerEdits) anchorPeer(groupID, ruleID, raw string, supplied, realPeer netip.Addr) bool {
+	key := groupID + "/" + ruleID + "/" + raw
+	_, existed := edits.ledger.AliasPeers[key]
+	accepted := anchorPeer(edits.ledger, groupID, ruleID, raw, supplied, realPeer)
+	if _, exists := edits.ledger.AliasPeers[key]; !existed && exists {
+		edits.aliases = append(edits.aliases, key)
+	}
+	return accepted
+}
+
+func (edits *ledgerEdits) rollback() {
+	for _, key := range edits.firstSeen {
+		delete(edits.ledger.FirstSeen, key)
+	}
+	for _, key := range edits.aliases {
+		delete(edits.ledger.AliasPeers, key)
+	}
+}
+
 func copyLedger(ledger Ledger) (Ledger, error) {
 	if ledgerSize(ledger) > maximumLedgerEntries {
 		return Ledger{}, errors.New("policy: durable ledger quota exceeded")

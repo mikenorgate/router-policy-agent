@@ -2,6 +2,7 @@ package policy
 
 import (
 	"cmp"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -133,16 +134,19 @@ type Input struct {
 	Ledger    Ledger
 }
 
-// Compile enforces role, identity, floor, translation, expiry and quota limits.
+// Compile is the offline wrapper for CompileContext.
 func (compiler *Compiler) Compile(input Input) (Candidate, error) {
-	if compiler == nil || input.Now.IsZero() || input.Now.Before(input.Ledger.LastValidated) {
-		return Candidate{}, errors.New("policy: missing compiler or unsafe clock")
-	}
-	lease := time.Duration(compiler.baseline.LeaseSeconds) * time.Second
-	groups, err := compiler.validateDirectory(input.Directory, input.Now, lease)
+	return compiler.CompileContext(context.Background(), input)
+}
+
+// CompileContext enforces role, identity, floor, translation, expiry and quotas.
+// Cancellation discards the whole candidate without mutating caller state.
+func (compiler *Compiler) CompileContext(ctx context.Context, input Input) (Candidate, error) {
+	groups, ledger, err := compiler.observeDirectory(ctx, input.Directory, input.Now, input.Ledger)
 	if err != nil {
 		return Candidate{}, err
 	}
+	lease := time.Duration(compiler.baseline.LeaseSeconds) * time.Second
 	if err := binding.Validate(input.Bindings, input.Now, lease, compiler.baseline.MaximumDevices); err != nil {
 		return Candidate{}, err
 	}
@@ -151,49 +155,40 @@ func (compiler *Compiler) Compile(input Input) (Candidate, error) {
 	}
 	bindings := map[string]binding.Record{}
 	for _, record := range input.Bindings.Records {
+		if err := ctx.Err(); err != nil {
+			return Candidate{}, err
+		}
 		mac, err := CanonicalMAC(record.MAC)
 		if err != nil || mac != record.MAC || bindings[mac].MAC != "" {
 			return Candidate{}, errors.New("policy: invalid or duplicate binding identity")
 		}
 		bindings[mac] = record
 	}
-	ledger, err := copyLedger(input.Ledger)
-	if err != nil {
-		return Candidate{}, err
-	}
-	ledger.LastValidated = input.Now
-	for id, group := range groups {
-		if ledger.NetworkGroups[id] {
-			group.IsNetwork = true
-			groups[id] = group
-		}
-		if group.Policy != nil || group.IsNetwork {
-			ledger.NetworkGroups[id] = true
-		}
-	}
-	if ledgerSize(ledger) > maximumLedgerEntries {
-		return Candidate{}, errors.New("policy: durable ledger quota exceeded")
-	}
 	result := Candidate{
 		BaselineHash: compiler.hash, BindingGeneration: input.Bindings.Generation,
 		CompiledAt: input.Now, Grants: []Grant{}, Denials: []Denial{}, Ledger: ledger,
 	}
+	tupleCount := 0
 	for _, device := range input.Directory.Devices {
-		working, err := copyLedger(result.Ledger)
-		if err != nil {
+		if err := ctx.Err(); err != nil {
 			return Candidate{}, err
 		}
-		grants, code := compiler.compileDevice(device, groups, bindings[device.MAC], input, &working)
+		edits := ledgerEdits{ledger: &result.Ledger}
+		grants, code := compiler.compileDevice(ctx, device, groups, bindings[device.MAC], input, &edits)
+		if err := ctx.Err(); err != nil {
+			return Candidate{}, err
+		}
 		if code == "device_quota_exceeded" {
 			return Candidate{}, errors.New("policy: expanded router quota exceeded")
 		}
 		if code != "" {
+			edits.rollback()
 			result.Denials = append(result.Denials, Denial{DeviceID: device.ID, Code: code})
 			continue
 		}
 		result.Grants = append(result.Grants, grants...)
-		result.Ledger = working
-		if expandedTuples(result.Grants) > compiler.baseline.MaximumTuples {
+		tupleCount += expandedTuples(grants)
+		if tupleCount > compiler.baseline.MaximumTuples {
 			return Candidate{}, errors.New("policy: expanded router quota exceeded")
 		}
 	}
@@ -203,10 +198,65 @@ func (compiler *Compiler) Compile(input Input) (Candidate, error) {
 	}
 	result.Ledger.LastValidated = input.Now
 	slices.SortFunc(result.Denials, func(left, right Denial) int { return cmp.Compare(left.DeviceID, right.DeviceID) })
+	if err := ctx.Err(); err != nil {
+		return Candidate{}, err
+	}
 	return result, nil
 }
 
-func (compiler *Compiler) validateDirectory(snapshot DirectorySnapshot, now time.Time, lease time.Duration) (
+// ObserveDirectory validates a complete observation and retains classifications
+// even when independent binding collection later fails. It never grants access
+// or starts a temporary-rule deadline; only successful compilation does that.
+func (compiler *Compiler) ObserveDirectory(ctx context.Context, snapshot DirectorySnapshot,
+	now time.Time, current Ledger,
+) (Ledger, error) {
+	_, ledger, err := compiler.observeDirectory(ctx, snapshot, now, current)
+	return ledger, err
+}
+
+func (compiler *Compiler) observeDirectory(ctx context.Context, snapshot DirectorySnapshot,
+	now time.Time, current Ledger,
+) (map[string]Group, Ledger, error) {
+	if ctx == nil || compiler == nil || now.IsZero() || now.Before(current.LastValidated) {
+		return nil, Ledger{}, errors.New("policy: missing compiler/context or unsafe clock")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, Ledger{}, err
+	}
+	groups, err := compiler.validateDirectory(ctx, snapshot, now, leaseDuration(compiler.baseline))
+	if err != nil {
+		return nil, Ledger{}, err
+	}
+	ledger, err := copyLedger(current)
+	if err != nil {
+		return nil, Ledger{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, Ledger{}, err
+	}
+	ledger.LastValidated = now
+	for id, group := range groups {
+		if err := ctx.Err(); err != nil {
+			return nil, Ledger{}, err
+		}
+		if ledger.NetworkGroups[id] {
+			group.IsNetwork = true
+			groups[id] = group
+		}
+		if group.Policy != nil || group.IsNetwork {
+			ledger.NetworkGroups[id] = true
+		}
+	}
+	if ledgerSize(ledger) > maximumLedgerEntries {
+		return nil, Ledger{}, errors.New("policy: durable ledger quota exceeded")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, Ledger{}, err
+	}
+	return groups, ledger, nil
+}
+
+func (compiler *Compiler) validateDirectory(ctx context.Context, snapshot DirectorySnapshot, now time.Time, lease time.Duration) (
 	map[string]Group, error,
 ) {
 	if !snapshot.Complete || !binding.Fresh(snapshot.ObservedAt, now, lease) ||
@@ -215,6 +265,9 @@ func (compiler *Compiler) validateDirectory(snapshot DirectorySnapshot, now time
 	}
 	groups := map[string]Group{}
 	for _, group := range snapshot.Groups {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if !identifier.MatchString(group.ID) || !validText(group.Name, 128) || groups[group.ID].ID != "" ||
 			group.Policy != nil && len(*group.Policy) > AttributeLimit {
 			return nil, errors.New("policy: invalid or duplicate group identity")
@@ -223,6 +276,9 @@ func (compiler *Compiler) validateDirectory(snapshot DirectorySnapshot, now time
 	}
 	ids, macs := map[string]bool{}, map[string]bool{}
 	for _, device := range snapshot.Devices {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		mac, err := CanonicalMAC(device.MAC)
 		if !identifier.MatchString(device.ID) || ids[device.ID] || err != nil ||
 			mac != device.MAC || macs[mac] || len(device.GroupIDs) > 256 {
@@ -233,8 +289,8 @@ func (compiler *Compiler) validateDirectory(snapshot DirectorySnapshot, now time
 	return groups, nil
 }
 
-func (compiler *Compiler) compileDevice(device Device, groups map[string]Group, record binding.Record,
-	input Input, ledger *Ledger,
+func (compiler *Compiler) compileDevice(ctx context.Context, device Device, groups map[string]Group, record binding.Record,
+	input Input, edits *ledgerEdits,
 ) ([]Grant, string) {
 	if !device.Active {
 		return nil, "inactive_account"
@@ -253,12 +309,15 @@ func (compiler *Compiler) compileDevice(device Device, groups map[string]Group, 
 	grantIndex := map[string]int{}
 	tupleCount := 0
 	for _, group := range access {
+		if ctx.Err() != nil {
+			return nil, "compilation_canceled"
+		}
 		document, err := ParseGroup(*group.Policy)
 		if err != nil { // selectGroups already checks this; do not trust that across refactors.
 			return nil, "malformed_group"
 		}
 		for _, rule := range document.Rules {
-			expires, err := ruleExpiry(group.ID, rule, input, ledger, compiler.baseline.LeaseSeconds)
+			expires, err := edits.ruleExpiry(group.ID, rule, input, compiler.baseline.LeaseSeconds)
 			if err != nil {
 				return nil, "invalid_expiry"
 			}
@@ -266,15 +325,21 @@ func (compiler *Compiler) compileDevice(device Device, groups map[string]Group, 
 				continue
 			}
 			for _, rawPeer := range rule.Peer.Addresses {
+				if ctx.Err() != nil {
+					return nil, "compilation_canceled"
+				}
 				peerIP, err := ParseHost(rawPeer)
 				if err != nil {
 					return nil, "malformed_peer"
 				}
 				peer, err := resolveEndpoint(compiler.baseline, peerIP)
-				if err != nil || !anchorPeer(ledger, group.ID, rule.ID, rawPeer, peerIP, peer.Real) {
+				if err != nil || !edits.anchorPeer(group.ID, rule.ID, rawPeer, peerIP, peer.Real) {
 					return nil, "unready_or_changed_alias"
 				}
 				for _, port := range rule.DestinationPorts {
+					if ctx.Err() != nil {
+						return nil, "compilation_canceled"
+					}
 					for _, address := range record.Addresses {
 						flow := floorFlow{mac: device.MAC, placement: placement, rule: rule,
 							device: address.IP, peer: peer.Real, port: port}

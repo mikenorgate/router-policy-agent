@@ -23,12 +23,29 @@ JSON, commands, raw firewall programs, bindings, helper clocks and reset
 operations reject. Collection limits are 8,192 groups and 4,096 devices; the
 compiler applies the remaining policy quotas and freshness checks.
 
-The processor receives typed directory data and a deadline. It must independently
-compile against its own baseline, qualified bindings, state and clock. The
-transport does not turn a callback into a policy validator. Requests are serial,
-with a configured deadline capped at ten seconds. Processor implementations must
+The processor receives typed directory data and a deadline. `internal/agent`
+provides that processor: it owns an immutable compiler, uses helper-owned state
+and time, and reads qualified bindings through a separate trusted dependency.
+The transport does not turn an arbitrary callback into a policy validator.
+Requests are serial, with a configured deadline capped at ten seconds. Processor implementations must
 honor cancellation; the transport alone cannot interrupt an arbitrary callback.
 Cancellation interrupts socket I/O and joins the interruption callback.
+
+In enforce mode, startup clears application permits before reading existing state;
+missing or unsafe state never triggers initialization. Each complete directory
+observation's watermark and managed cohort are saved before collecting bindings.
+A newer denial therefore cannot be replaced by an older allow if binding
+collection fails. Compilation saves immutable expiry/alias anchors before
+calling the backend. On failure, enforce mode attempts permit removal with an
+independent two-second deadline. Cleanup can outlive a canceled request by that
+bounded interval; failed cleanup requires a new successful closed startup.
+Shadow mode rejects firewall dependencies and never calls them.
+Repeating a snapshot cannot restart its directory lease.
+
+The enforce-mode callbacks are a contract for a trusted, restricted backend,
+not an implementation of nftables or proof of kernel revocation. No executable
+currently wires these components together; qualified binding collection,
+kernel enforcement, translation coordination and packaging remain unfinished.
 
 Responses contain only schema, shadow/applied/rejected status, a fixed error
 code, baseline hash, compilation time and grant/denial counts. The maximum
@@ -72,6 +89,13 @@ identity, malformed schemas, backend-error redaction and cancellation. State
 tests cover exclusive ownership, restart, clock/directory rollback, loss of an
 account, immutable anchors and unsafe filesystem objects. Fuzz tests cover
 request framing, schema decoding and state round trips.
+
+Engine tests cover transaction ordering, persisted observation before binding
+failure, replay, non-renewable leases, canceled requests, startup/restart and
+partial backend failures. Compiler cancellation tests discard whole candidates;
+the capacity test exercises 4,096 synthetic identities and the 65,536-entry
+ledger without copying that ledger for each device. These are model and library
+tests, not native packet tests of an enforcement backend.
 
 All fixtures are synthetic. Deployment addresses, device identifiers, secrets,
 private inventories and operational captures must stay outside this repository.
