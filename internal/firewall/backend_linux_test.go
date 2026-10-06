@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"syscall"
 	"testing"
 	"time"
 
@@ -122,6 +124,97 @@ func TestGuardSealCannotAddOrRenewAuthorization(t *testing.T) {
 	cancel()
 	if err := validateGuardSeal(ctx, sealed); !errors.Is(err, context.Canceled) {
 		t.Fatal("sealing validation ignored cancellation")
+	}
+}
+
+func TestGuardedBackendFailureKeepsOriginalAndCleanupErrors(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"missing generation", "invalid classification", "canceled request"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			path := t.TempDir()
+			if err := os.Chmod(path, 0o700); err != nil { // #nosec G302 -- Owner-only fixture directory.
+				t.Fatal(err)
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			owner, ok := info.Sys().(*syscall.Stat_t)
+			if !ok {
+				t.Fatal("fixture directory has no checked Linux owner")
+			}
+			// Test-only current-user fence; no generation record or executable
+			// exists. This cannot produce a privileged application or receipt.
+			fence, err := hostfs.OpenFence(t.Context(), hostfs.DirectoryOptions{
+				Path: path, OwnerUID: owner.Uid, Private: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 2*time.Second)
+				defer cancel()
+				if err := fence.Close(cleanup); err != nil {
+					t.Error(err)
+				}
+			})
+			options := backendOptionsFixture(t)
+			options.generation = &generationGate{fence: fence}
+			backend, err := newGuardedBackend(options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, history := t.Context(), state.EmptyClassification()
+			switch name {
+			case "invalid classification":
+				history = state.Classification{}
+			case "canceled request":
+				canceled, cancel := context.WithCancel(ctx)
+				cancel()
+				ctx = canceled
+			}
+			err = backend.apply(ctx, policy.Authorization{}, history)
+			joined, ok := err.(interface{ Unwrap() []error })
+			if !ok || len(joined.Unwrap()) != 2 || !errors.Is(err, os.ErrClosed) {
+				t.Fatal("failed application discarded the independent cleanup failure")
+			}
+			if name == "canceled request" && !errors.Is(err, context.Canceled) {
+				t.Fatal("cleanup erased the original cancellation")
+			}
+			if len(options.executor.gate) != 0 {
+				t.Fatal("failed cleanup left the executor gate held")
+			}
+		})
+	}
+}
+
+func TestGuardedOperationRejectsUntrustedPreparationWithoutStartingChild(t *testing.T) {
+	t.Parallel()
+	renderer, input, _, _ := renderFixture(t)
+	logical, err := renderer.prepare(t.Context(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, err := prepareClassifiedGuards(t.Context(), logical, guardClassificationFixture())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, input := range []commandInput{
+		{op: applyGuarded},
+		{op: sealGuarded},
+		{op: applyGuarded, payload: clearBatch(t), guarded: active},
+		{op: sealGuarded, prepared: logical, guarded: active},
+		{op: inspectOwned, guarded: active},
+		{op: sealGuarded, guarded: active},
+		{op: applyGuarded, guarded: &preparedGuardBatch{}},
+	} {
+		// No executable exists: every case must reject at its input boundary,
+		// not reach command execution and hide that failure as an nft error.
+		_, err := (&process{}).run(t.Context(), input)
+		if err == nil || err.Error() == "firewall: nftables operation failed" {
+			t.Fatal("invalid guarded input escaped its pre-execution boundary")
+		}
 	}
 }
 
