@@ -23,8 +23,9 @@ func prepareClassifiedGuards(
 
 // prepareGuardSeal clears every owned lease mirror and appends saved deny-only
 // classifiers, even with no grants. It never flushes classification, changes
-// rules, or invents an authorization clock. Execution remains gated separately
-// on the protected floor, writer fence and boot traffic-ordering qualification.
+// rules, or invents an authorization clock. Execution requires fixed guard
+// inspection and shared writer fencing, not an unchanged external floor.
+// Production use still needs independent protection and boot qualification.
 func prepareGuardSeal(ctx context.Context, classification state.Classification) (*preparedGuardBatch, error) {
 	if ctx == nil {
 		return nil, errors.New("firewall: missing sealing context")
@@ -128,4 +129,33 @@ func validatePreparedGuardBatch(ctx context.Context, prepared *preparedGuardBatc
 		return errors.New("firewall: missing prepared guarded transaction")
 	}
 	return validateGuardBatchWithClassification(ctx, prepared.batch.data, prepared.classification)
+}
+
+// Sealing has no authorization clock and cannot contain any leased addition.
+// Only fixed mirror flushes and permanent deny-only additions are admitted.
+func validateGuardSeal(ctx context.Context, prepared *preparedGuardBatch) error {
+	if err := validatePreparedGuardBatch(ctx, prepared); err != nil {
+		return err
+	}
+	batch := prepared.batch
+	if !batch.preparedAt.IsZero() || !batch.startBefore.IsZero() || !batch.startedAt.IsZero() {
+		return errors.New("firewall: sealing cannot carry authorization preparation")
+	}
+	commands, err := decodeGuardChanges(batch.data)
+	if err != nil {
+		return err
+	}
+	for _, command := range commands.Commands {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if command.Add == nil {
+			continue
+		}
+		name := command.Add.Element.Name
+		if name != cohortSet && name != classified4Set && name != classified6Set {
+			return errors.New("firewall: sealing cannot add a lease")
+		}
+	}
+	return ctx.Err()
 }

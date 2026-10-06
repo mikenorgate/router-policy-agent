@@ -34,6 +34,8 @@ const (
 	applyOwned
 	inspectGuardEgress
 	inspectWholeRuleset
+	applyGuarded
+	sealGuarded
 )
 
 // process has no public arbitrary-command method. Its descriptor is acquired
@@ -48,6 +50,7 @@ type commandInput struct {
 	op       operation
 	payload  []byte
 	prepared *preparedBatch
+	guarded  *preparedGuardBatch
 }
 
 func openProcess(ctx context.Context, path string) (*process, error) {
@@ -197,6 +200,12 @@ func checkPreparation(batch *preparedBatch) error {
 }
 
 func (process *process) run(ctx context.Context, input commandInput) ([]byte, error) {
+	if ctx == nil {
+		return nil, errors.New("firewall: missing command context")
+	}
+	if input.guarded != nil && input.op != applyGuarded && input.op != sealGuarded {
+		return nil, errors.New("firewall: guarded preparation requires its fixed operation")
+	}
 	arguments := []string{"--json", "list", "table", "inet", ownedTable}
 	switch input.op {
 	case inspectOwned, inspectGuardEgress, inspectWholeRuleset:
@@ -213,6 +222,22 @@ func (process *process) run(ctx context.Context, input commandInput) ([]byte, er
 		if err := validateBatch(input.payload); err != nil {
 			return nil, err
 		}
+		arguments = []string{"--json", "--file", "-"}
+	case applyGuarded, sealGuarded:
+		if len(input.payload) != 0 || input.prepared != nil || input.guarded == nil {
+			return nil, errors.New("firewall: guarded mutation requires trusted preparation")
+		}
+		if err := validatePreparedGuardBatch(ctx, input.guarded); err != nil {
+			return nil, err
+		}
+		if input.op == sealGuarded {
+			if err := validateGuardSeal(ctx, input.guarded); err != nil {
+				return nil, err
+			}
+		} else {
+			input.prepared = &input.guarded.batch
+		}
+		input.payload = input.guarded.batch.data
 		arguments = []string{"--json", "--file", "-"}
 	default:
 		return nil, errors.New("firewall: unknown operation")

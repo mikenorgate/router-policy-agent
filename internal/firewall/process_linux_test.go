@@ -164,6 +164,13 @@ func TestProcessPinsExecutableAndRestrictsArguments(t *testing.T) {
 	if _, err := process.execute(t.Context(), applyOwned, arbitrary); err == nil {
 		t.Fatal("accepted an arbitrary program")
 	}
+	for _, operation := range []operation{applyGuarded, sealGuarded} {
+		for _, payload := range [][]byte{nil, clearBatch(t), arbitrary} {
+			if _, err := process.execute(t.Context(), operation, payload); err == nil {
+				t.Fatal("raw executor bypassed trusted guarded preparation")
+			}
+		}
+	}
 	if err := process.close(); err != nil {
 		t.Fatal(err)
 	}

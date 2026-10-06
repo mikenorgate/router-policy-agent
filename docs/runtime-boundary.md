@@ -1,9 +1,9 @@
 # Local transport and durable state
 
 These packages implement the helper boundary, not a working firewall service.
-No current command starts the transport or updates nftables. Guard layouts are
-exercised only by isolated test fixtures, not a production backend. The remaining
-runtime and packet tests are listed in [the activation gates](architecture.md#implementation-gates).
+No current command starts the transport or updates nftables. The private guarded
+backend is exercised in isolated test fixtures, not an installed service. The
+remaining runtime and packet tests are listed in [the activation gates](architecture.md#implementation-gates).
 
 ## Socket contract
 
@@ -73,10 +73,10 @@ and authorization reject JSON serialization/deserialization; boot must obtain
 new evidence, never restore one of these process-local values.
 
 The enforce-mode callbacks are a contract for a trusted, restricted backend,
-not proof of packet revocation. Restricted nftables primitives exist separately;
-the callbacks do not yet wire them into a guarded backend. No executable
-currently wires these components together; qualified binding collection,
-kernel enforcement, translation coordination and packaging remain unfinished.
+not proof of production packet revocation. The private guarded backend implements
+the apply/seal operations below, but no executable wires it into these callbacks.
+Qualified binding collection, protected packet-path integration, translation
+coordination and packaging remain unfinished.
 
 Both callbacks receive independently owned `state.Classification` slices for
 MACs, IPv4 and IPv6. `Seal` must clear only owned permits and union these
@@ -177,11 +177,11 @@ the combined permanent cohort must still fit the fixed capacity.
 
 Inspection and mutation share the executor's local gate. This does not fence
 another privileged writer or verify immutable rules, hooks and protected paths.
-The current verifier rejects chains in this set-only table: the final guarded
-table needs a separately reviewed chain/rule schema, not an exception allowing
-arbitrary objects. Library metadata checks establish format compatibility, not
-release authenticity. The owning signed image and packet-path auditor remain
-required.
+This verifier rejects chains in the set-only table. The private guarded backend
+uses a separate fixed chain/rule schema and complete reviewed-ruleset comparison;
+it does not relax this verifier to allow arbitrary objects. Library metadata
+checks establish format compatibility, not release authenticity. The owning
+signed image and packet-path auditor remain required.
 
 Each tuple contains interface, MAC, device address, peer address and destination
 port. Direction, family and TCP/UDP protocol select the fixed set. The selected
@@ -208,8 +208,9 @@ transaction latency still need qualification before activation.
 The authorization anchor and preparation fence cover different delays. The
 former follows the compiler result into rendering; the latter bounds the
 rendered batch's queueing and execution reserve. Neither qualifies UTC
-synchronization or suspend/resume behavior on the selected router. The final
-guarded backend must use this handoff and pass end-to-end packet expiry tests.
+synchronization or suspend/resume behavior on the selected router. The private
+guarded backend uses this handoff and has native packet expiry tests; the final
+installed packet path still requires qualification.
 A UTC timestamp alone cannot establish elapsed authorization age.
 
 `make kernel` runs real set operations in an isolated container. Tests verify
@@ -268,10 +269,10 @@ prove that old traffic is blocked before the update callback, readiness does not
 restore permits, and classification and unrelated objects remain intact. It
 does not retarget a translator or qualify the full protected floor.
 
-These primitives are not wired into the executor's mutation path. An advisory
-lock cannot restrain a nonparticipating privileged writer, and a generation
-record cannot attest kernel rules or translator state. Actual owning adapters,
-failure sealing, boot ordering, every privileged writer and independent checks
+The private guarded backend uses the fence and generation checks during
+application. An advisory lock cannot restrain a nonparticipating privileged
+writer, and a generation record cannot attest kernel rules or translator state.
+Actual owning adapters, failure sealing, boot ordering, every privileged writer and independent checks
 of protected paths must be integrated and qualified before guarded writes
 activate. Deployment paths, hashes and records remain private configuration.
 
@@ -321,7 +322,7 @@ not become its own expectation.
 The isolated fixture verifies drift detection and lack of mutation. It is not
 the deployment's P01–P10 projection or packet qualification. Release/pin
 provenance, independent protection/caller-path checks, writer adapters,
-guarded mutation wiring and actual translator-state verification remain required.
+executable/backend integration and actual translator-state verification remain required.
 
 ## Pinned router profile loading
 
@@ -482,7 +483,8 @@ ownership records, not a qualified NAS or address collector.
 
 Permanent kernel sets survive lease replacement and expiry, not reboot by
 themselves. Restoring saved classifiers is tested separately below. Closed boot
-ordering, writer fencing and guarded-mutation wiring are still required.
+ordering, actual owning-writer integration and executable/backend wiring are
+still required.
 Related ICMP/PMTU and other required control traffic need explicit reviewed
 paths; they must not be enabled by a broad bypass. P01–P10 ordering, all-role
 Security tests, synchronized UTC/suspend behavior, DSR and native/translated
@@ -517,8 +519,8 @@ packet fixture reassigns a historical IPv4/IPv6 address to an unmanaged MAC:
 restored classification denies both initiation directions before a legacy
 permit, while a never-classified address on that same MAC remains unaffected.
 These fixtures do not prove translated packet correlation, storage-to-boot
-traffic ordering or the production protected floor. Guarded mutation remains
-unavailable in the runtime executor.
+traffic ordering or the production protected floor. The private guarded backend
+uses these transactions; no current command can activate them.
 
 ### Owned guard inspection
 
@@ -548,8 +550,51 @@ These reads are not an atomic kernel-generation snapshot. A lease expiring
 between them can cause a mirror mismatch; inspection fails closed and may be
 retried without renewing authorization. Nor does this schema attest the
 surrounding protected chain graph or coordinate other privileged writers.
-Guarded updates remain rejected by the current mutation path until those
-requirements are implemented together.
+The private guarded backend instead obtains one complete listing under the
+shared writer fence. These separate diagnostic reads cannot authorize updates.
+
+### Guarded backend
+
+The private Linux backend requires a paired pinned profile, checked executor,
+shared writer fence, root-owned expected generation and helper-owned clock.
+The expected ready generation must name the independently reviewed floor hash;
+neither a live listing nor a reader request can supply that expectation.
+Construction does not authenticate release provenance, qualify P01–P10, verify
+actual translator state or establish that other privileged writers participate.
+
+Application holds the writer fence and executor gate while reading and checking
+the complete ruleset, rendering the immutable authorization with its original
+age, checking cumulative classification capacity and committing every mirror.
+It captures the complete post-commit listing before releasing both gates, then
+fully validates those owned bytes before reporting success. This receipt is
+evidence at that fenced point, not a reusable permit. A cooperating later writer
+must revoke before changing its owned floor or mappings. No deadline is extended
+to accommodate inspection, queueing or validation.
+
+Every application failure attempts sealing with an independent two-second
+cleanup deadline, including canceled requests and changed generation metadata.
+Cleanup failure remains part of the returned error; callers cannot report an
+applied policy or reopen readiness. Sealing still needs the shared fence and
+exact fixed guard rules/objects, but does not require a ready generation or an
+unchanged external floor. Inconsistent or expired lease mirrors cannot prevent
+their removal. Both permanent MAC mirrors and saved address history are retained
+as a validated, capacity-bounded union. Cleanup cannot repair external tables,
+delete historical classification, create guards or open boot forwarding.
+
+Only privately prepared transactions reach the two fixed guarded operations.
+The raw executor cannot submit them. A sealing transaction has no authorization
+clock and can contain only mirror flushes and permanent deny-only additions;
+it cannot add or renew a lease. Commands still use the pinned executable, fixed
+argument vectors, restricted environment and bounded output.
+
+An independently authored native router fixture exercises this actual backend,
+not a test-only mutation adapter. Packet tests cover IPv4/IPv6 initiation and
+replies, retained classification, cancellation, invalid authorization, closed
+generation, external floor drift and expiry during continuous traffic. Existing
+flows stop before the stateful shortcut; external drift is left untouched.
+The fixture's bridge is not the production protected-policy projection. Actual
+writer cooperation, authenticated collectors, boot ordering, UTC/suspend and
+translator identity remain unqualified, and executable wiring is still absent.
 
 ## Verification
 

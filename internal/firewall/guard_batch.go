@@ -12,8 +12,8 @@ import (
 )
 
 // preparedGuardBatch preserves the original renderer's preparation/age fence.
-// The current set-only executor deliberately does not admit this new schema.
-// Guarded inventory verification and writer fencing are required before wiring.
+// Only the guarded backend admits this schema after complete inspection under
+// the shared writer fence. The raw set-only executor still rejects it.
 type preparedGuardBatch struct {
 	batch          preparedBatch
 	classification *state.Classification
