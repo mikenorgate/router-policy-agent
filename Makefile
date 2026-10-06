@@ -46,6 +46,7 @@ fuzz:
 	$(GO) test ./internal/ipc -run '^$$' -fuzz FuzzFrame -fuzztime 10s
 	$(GO) test ./internal/firewall -run '^$$' -fuzz FuzzBatch -fuzztime 10s
 	$(GO) test ./internal/firewall -run '^$$' -fuzz FuzzInventory -fuzztime 10s
+	$(GO) test ./internal/agent -run '^$$' -fuzz FuzzClock -fuzztime 10s
 
 ## check: Run tests and static checks
 check: test vet

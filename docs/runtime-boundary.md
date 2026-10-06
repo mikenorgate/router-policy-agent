@@ -42,6 +42,21 @@ bounded interval; failed cleanup requires a new successful closed startup.
 Shadow mode rejects firewall dependencies and never calls them.
 Repeating a snapshot cannot restart its directory lease.
 
+The engine also keeps a process-local monotonic age anchor independent of UTC
+snapshot timestamps. Between readings, authorization time advances by at least
+the elapsed monotonic interval; a forward UTC correction can advance it further.
+A UTC lag of at most 250 ms is clamped to that lower bound, never added to a lease.
+A larger backward discrepancy rejects and attempts permit removal. Failed samples
+and another `Start` on the same engine do not reset that age anchor. Evidence is
+also checked against actual UTC so the clamp cannot admit future timestamps.
+
+After startup, directory observations must be at least as recent as startup and
+strictly newer than any persisted directory watermark. Binding snapshot,
+association and address observations must also be collected afresh after startup.
+The collector must revalidate actual association/ownership, not stamp a cache
+with the current time. Losing process-local timing on restart therefore cannot
+make a persisted directory observation or old ownership evidence fresh again.
+
 The enforce-mode callbacks are a contract for a trusted, restricted backend,
 not proof of packet revocation. Restricted nftables primitives exist separately;
 the callbacks do not yet wire them into a guarded backend. No executable
@@ -139,10 +154,12 @@ rejects the entire replacement. A 90-second fresh grant therefore gets at most
 85 seconds in this renderer. The deployed kernel's timeout resolution and maximum
 transaction latency still need qualification before activation.
 
-This preparation fence does not attest whole-service clock synchronization or
-cross-request directory lease age. Clock discontinuities between fresh reads,
-snapshot replay after a clock change and restart still need independent runtime
-qualification; a UTC timestamp alone cannot establish elapsed authorization age.
+The preparation fence and engine age checks are separate controls. Neither
+attests UTC synchronization, suspend/resume behavior on the selected router,
+or the complete engine-to-kernel deadline handoff. The final backend must preserve
+the engine's conservative age through preparation, queueing and execution.
+Qualified synchronization checks and native failure tests remain activation gates;
+a UTC timestamp alone cannot establish elapsed authorization age.
 
 `make kernel` runs real set operations in an isolated container. Tests verify
 typed compiler output, actual empty/populated schema inspection, element expiry
@@ -163,7 +180,11 @@ request framing, schema decoding and state round trips.
 
 Engine tests cover transaction ordering, persisted observation before binding
 failure, replay, non-renewable leases, canceled requests, startup/restart and
-partial backend failures. Compiler cancellation tests discard whole candidates;
+partial backend failures. Deterministic elapsed-time tests reproduce and reject
+cross-request clock rollback, require fresh directory/ownership evidence after
+restart, and check recovery and future-evidence rejection. Clock fuzzing checks
+that accepted time never understates UTC or monotonic age. Compiler cancellation
+tests discard whole candidates;
 the capacity test exercises 4,096 synthetic identities and the 65,536-entry
 ledger without copying that ledger for each device. These are model and library
 tests, not native packet tests of an enforcement backend.

@@ -45,7 +45,9 @@ type Enforcement struct {
 
 // Options contains privileged local dependencies. Bindings must reread an
 // independently authenticated, qualified producer on every call. Clock is the
-// helper's clock; the IPC request supplies neither time nor ownership evidence.
+// helper's synchronized UTC source; runtime wiring must independently qualify
+// that source. The engine measures elapsed time itself. Reader IPC supplies
+// neither time configuration nor ownership evidence.
 type Options struct {
 	Mode     Mode
 	State    Persistence
@@ -58,10 +60,15 @@ type Options struct {
 // The caller retains ownership of the persistent store and backend resources.
 // Engine must not be copied or used before Start succeeds.
 type Engine struct {
-	compiler *policy.Compiler
-	options  Options
-	gate     chan struct{}
-	started  bool
+	compiler         *policy.Compiler
+	options          Options
+	gate             chan struct{}
+	started          bool
+	clock            helperClock
+	lease            time.Duration
+	maximumDevices   int
+	startupTime      time.Time
+	startupDirectory time.Time
 }
 
 // New copies and validates the helper-owned baseline. Shadow mode rejects
@@ -78,12 +85,16 @@ func New(baseline policy.Baseline, options Options) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Engine{compiler: compiler, options: options, gate: make(chan struct{}, 1)}, nil
+	return &Engine{
+		compiler: compiler, options: options, gate: make(chan struct{}, 1),
+		lease: time.Duration(baseline.LeaseSeconds) * time.Second, maximumDevices: baseline.MaximumDevices,
+	}, nil
 }
 
 // Start clears application permits before loading state. It never initializes
-// missing state or restores a persisted permit. Unsafe state or clocks leave
-// enforcement closed; qualified kernel classification remains a backend gate.
+// missing state or restores a persisted permit. Directory and ownership evidence
+// must be freshly observed after startup before they can authorize. Unsafe state
+// or clocks leave enforcement closed; kernel classification is a backend gate.
 func (engine *Engine) Start(ctx context.Context) error {
 	if err := engine.acquire(ctx); err != nil {
 		return err
@@ -104,13 +115,19 @@ func (engine *Engine) Start(ctx context.Context) error {
 	if err := engine.seal(ctx, document.CohortMACs); err != nil {
 		return err
 	}
-	if now := engine.options.Clock(); now.IsZero() || now.Before(document.Ledger.LastValidated) {
+	now, err := engine.now()
+	if err != nil {
+		return err
+	}
+	if now.authorization.Before(document.Ledger.LastValidated) {
 		return errors.New("agent: unsafe startup clock")
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	engine.started = true
+	engine.startupTime = now.authorization
+	engine.startupDirectory = document.LastDirectoryObservedAt
 	return nil
 }
 
@@ -119,7 +136,10 @@ func (engine *Engine) Start(ctx context.Context) error {
 // compiles and durably saves deadline/alias anchors before application. Failures
 // cannot renew a lease or restore older directory decisions. In enforce mode
 // they trigger bounded permit removal, even if the request has been canceled.
-func (engine *Engine) Process(ctx context.Context, snapshot policy.DirectorySnapshot) (receipt ipc.Receipt, result error) {
+func (engine *Engine) Process(
+	ctx context.Context,
+	snapshot policy.DirectorySnapshot,
+) (receipt ipc.Receipt, result error) {
 	if err := engine.acquire(ctx); err != nil {
 		return ipc.Receipt{}, err
 	}
@@ -151,7 +171,16 @@ func (engine *Engine) Process(ctx context.Context, snapshot policy.DirectorySnap
 	if _, err := state.CheckDirectory(document, snapshot); err != nil {
 		return ipc.Receipt{}, err
 	}
-	ledger, err := engine.compiler.ObserveDirectory(ctx, snapshot, engine.options.Clock(), document.Ledger)
+	now, err := engine.now()
+	if err != nil {
+		return ipc.Receipt{}, err
+	}
+	isBeforeStartup := snapshot.ObservedAt.Before(engine.startupTime)
+	isPersistedReplay := !engine.startupDirectory.IsZero() && !snapshot.ObservedAt.After(engine.startupDirectory)
+	if isBeforeStartup || isPersistedReplay || !binding.Fresh(snapshot.ObservedAt, now.utc, engine.lease) {
+		return ipc.Receipt{}, errors.New("agent: directory observation predates startup or is not fresh")
+	}
+	ledger, err := engine.compiler.ObserveDirectory(ctx, snapshot, now.authorization, document.Ledger)
 	if err != nil {
 		return ipc.Receipt{}, err
 	}
@@ -167,8 +196,20 @@ func (engine *Engine) Process(ctx context.Context, snapshot policy.DirectorySnap
 	if err != nil {
 		return ipc.Receipt{}, fmt.Errorf("agent: collect qualified bindings: %w", err)
 	}
+	now, err = engine.now()
+	if err != nil {
+		return ipc.Receipt{}, err
+	}
+	// Validate against actual UTC as well as the conservative authorization
+	// clock. Its monotonic lower bound must not admit future-dated evidence.
+	if err := binding.Validate(bindings, now.utc, engine.lease, engine.maximumDevices); err != nil {
+		return ipc.Receipt{}, err
+	}
+	if err := engine.checkStartupBindings(ctx, bindings); err != nil {
+		return ipc.Receipt{}, err
+	}
 	candidate, err := engine.compiler.CompileContext(ctx, policy.Input{
-		Directory: snapshot, Bindings: bindings, Ledger: observed.Ledger, Now: engine.options.Clock(),
+		Directory: snapshot, Bindings: bindings, Ledger: observed.Ledger, Now: now.authorization,
 	})
 	if err != nil {
 		return ipc.Receipt{}, err
@@ -183,12 +224,12 @@ func (engine *Engine) Process(ctx context.Context, snapshot policy.DirectorySnap
 	if err := ctx.Err(); err != nil {
 		return ipc.Receipt{}, err
 	}
-	now := engine.options.Clock()
-	if now.IsZero() || now.Before(candidate.CompiledAt) {
-		return ipc.Receipt{}, errors.New("agent: clock changed before application")
+	now, err = engine.now()
+	if err != nil {
+		return ipc.Receipt{}, err
 	}
 	for _, grant := range candidate.Grants {
-		if !now.Before(grant.ExpiresAt()) {
+		if !now.authorization.Before(grant.ExpiresAt()) {
 			return ipc.Receipt{}, errors.New("agent: authorization expired before application")
 		}
 	}
@@ -204,6 +245,26 @@ func (engine *Engine) Process(ctx context.Context, snapshot policy.DirectorySnap
 	}
 	return ipc.Receipt{SchemaVersion: 1, Status: status, BaselineHash: candidate.BaselineHash,
 		CompiledAt: candidate.CompiledAt, GrantCount: len(candidate.Grants), DenialCount: len(candidate.Denials)}, nil
+}
+
+func (engine *Engine) checkStartupBindings(ctx context.Context, snapshot binding.Snapshot) error {
+	if snapshot.ObservedAt.Before(engine.startupTime) {
+		return errors.New("agent: binding snapshot predates helper startup")
+	}
+	for _, record := range snapshot.Records {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if record.AssociatedAt.Before(engine.startupTime) {
+			return errors.New("agent: association evidence predates helper startup")
+		}
+		for _, address := range record.Addresses {
+			if address.ObservedAt.Before(engine.startupTime) {
+				return errors.New("agent: address evidence predates helper startup")
+			}
+		}
+	}
+	return nil
 }
 
 // Stop prevents further requests and removes only owned application permits.

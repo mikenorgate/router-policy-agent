@@ -20,6 +20,8 @@ type Snapshot struct {
 
 // Record combines a current, actual NAS association with address ownership.
 // The NAS source must check the observed VLAN, not just a RADIUS reply attribute.
+// AssociatedAt is the latest qualified association observation, not connection
+// creation time. A cache reread is not a new qualified observation.
 type Record struct {
 	MAC           string    `json:"mac"`
 	NAS           string    `json:"nas"`

@@ -7,6 +7,7 @@ import (
 	"os"
 	"slices"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/mikenorgate/router-policy-agent/internal/binding"
@@ -407,6 +408,179 @@ func TestRepeatingSnapshotCannotRenewItsLease(t *testing.T) {
 	if _, err := engine.Process(t.Context(), f.directory); err == nil || len(f.firewall.active) != 0 {
 		t.Fatalf("expired directory restored permission: %v", err)
 	}
+}
+
+func TestClockRollbackCannotRejuvenateEvidence(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		f := newFixture(t)
+		engine := f.engine(t, f.options(Enforce))
+		if _, err := engine.Process(t.Context(), f.directory); err != nil {
+			t.Fatal(err)
+		}
+		// Two minutes really elapse, but UTC advances only 45 seconds after a
+		// backward adjustment. It still exceeds the durable validation time.
+		time.Sleep(120 * time.Second)
+		f.now = f.now.Add(45 * time.Second)
+		receipt, err := engine.Process(t.Context(), f.directory)
+		if err == nil || receipt.Status != "" || len(f.firewall.active) != 0 || len(f.firewall.candidates) != 1 {
+			t.Fatalf("old evidence regained a lease after clock rollback: %+v, %v", receipt, err)
+		}
+	})
+}
+
+func TestRestartRequiresFreshEvidence(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		directory   bool
+		snapshot    bool
+		association bool
+		address     bool
+		wantErr     bool
+	}{
+		{name: "directory predates startup", wantErr: true},
+		{name: "binding snapshot predates startup", directory: true, wantErr: true},
+		{name: "association predates startup", directory: true, snapshot: true, wantErr: true},
+		{name: "address predates startup", directory: true, snapshot: true, association: true, wantErr: true},
+		{name: "all evidence refreshed", directory: true, snapshot: true, association: true, address: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				f := newFixture(t)
+				engine := f.engine(t, f.options(Enforce))
+				if _, err := engine.Process(t.Context(), f.directory); err != nil {
+					t.Fatal(err)
+				}
+				if err := engine.Stop(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				time.Sleep(5 * time.Second)
+				f.now = f.now.Add(5 * time.Second)
+				engine = f.engine(t, f.options(Enforce))
+				if test.directory {
+					f.directory.ObservedAt = f.now
+				}
+				if test.snapshot {
+					f.bindings.ObservedAt = f.now
+				}
+				if test.association {
+					f.bindings.Records[0].AssociatedAt = f.now
+				}
+				if test.address {
+					f.bindings.Records[0].Addresses[0].ObservedAt = f.now
+				}
+				receipt, err := engine.Process(t.Context(), f.directory)
+				if (err != nil) != test.wantErr || test.wantErr && (receipt.Status != "" || len(f.firewall.active) != 0) {
+					t.Fatalf("restart evidence gate failed: %+v, %v", receipt, err)
+				}
+				if !test.wantErr && (receipt.GrantCount != 1 || len(f.firewall.active) != 1) {
+					t.Fatal("fresh observations could not authorize after restart")
+				}
+			})
+		})
+	}
+}
+
+func TestRestartRejectsPersistedSnapshotAtStartupTime(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		f := newFixture(t)
+		engine := f.engine(t, f.options(Enforce))
+		if _, err := engine.Process(t.Context(), f.directory); err != nil {
+			t.Fatal(err)
+		}
+		if err := engine.Stop(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		engine = f.engine(t, f.options(Enforce))
+		if _, err := engine.Process(t.Context(), f.directory); err == nil || len(f.firewall.active) != 0 {
+			t.Fatal("restart reused the persisted observation at an equal startup timestamp")
+		}
+	})
+}
+
+func TestSmallClockLagDoesNotExtendLeaseOrAdmitFutureEvidence(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		mutate func(*fixture)
+	}{
+		{name: "existing observation"},
+		{name: "future directory", mutate: func(f *fixture) {
+			f.directory.ObservedAt = f.now.Add(50 * time.Millisecond)
+		}},
+		{name: "future binding snapshot", mutate: func(f *fixture) {
+			f.bindings.ObservedAt = f.now.Add(50 * time.Millisecond)
+		}},
+		{name: "future association", mutate: func(f *fixture) {
+			f.bindings.Records[0].AssociatedAt = f.now.Add(50 * time.Millisecond)
+		}},
+		{name: "future address", mutate: func(f *fixture) {
+			f.bindings.Records[0].Addresses[0].ObservedAt = f.now.Add(50 * time.Millisecond)
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				f := newFixture(t)
+				engine := f.engine(t, f.options(Enforce))
+				if _, err := engine.Process(t.Context(), f.directory); err != nil {
+					t.Fatal(err)
+				}
+				deadline := f.firewall.active[0].ExpiresAt()
+				time.Sleep(30 * time.Second)
+				f.now = f.now.Add(30*time.Second - 100*time.Millisecond)
+				f.bindings.ObservedAt = f.now
+				f.bindings.Records[0].AssociatedAt = f.now
+				f.bindings.Records[0].Addresses[0].ObservedAt = f.now
+				if test.mutate != nil {
+					test.mutate(f)
+				}
+				receipt, err := engine.Process(t.Context(), f.directory)
+				if test.mutate != nil {
+					if err == nil || receipt.Status != "" || len(f.firewall.active) != 0 {
+						t.Fatal("monotonic clock clamp admitted future evidence")
+					}
+					return
+				}
+				if err != nil || receipt.GrantCount != 1 || !f.firewall.active[0].ExpiresAt().Equal(deadline) ||
+					!receipt.CompiledAt.Equal(f.now.Add(100*time.Millisecond)) {
+					t.Fatalf("clock sampling lag extended a lease or understated age: %+v, %v", receipt, err)
+				}
+			})
+		})
+	}
+}
+
+func TestClockRecoveryRequiresNewEvidence(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		f := newFixture(t)
+		engine := f.engine(t, f.options(Enforce))
+		if _, err := engine.Process(t.Context(), f.directory); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(120 * time.Second)
+		f.now = f.now.Add(45 * time.Second)
+		if _, err := engine.Process(t.Context(), f.directory); err == nil {
+			t.Fatal("clock rollback was accepted")
+		}
+		f.now = f.now.Add(75 * time.Second)
+		if _, err := engine.Process(t.Context(), f.directory); err == nil || len(f.firewall.active) != 0 {
+			t.Fatal("clock recovery refreshed old directory or binding evidence")
+		}
+		f.directory.ObservedAt = f.now
+		f.bindings.ObservedAt = f.now
+		f.bindings.Records[0].AssociatedAt = f.now
+		f.bindings.Records[0].Addresses[0].ObservedAt = f.now
+		if receipt, err := engine.Process(t.Context(), f.directory); err != nil || receipt.GrantCount != 1 {
+			t.Fatalf("clock recovery could not accept new evidence: %+v, %v", receipt, err)
+		}
+	})
 }
 
 func TestHelperSerializesRequestsAndCancelsWaitingCaller(t *testing.T) {
