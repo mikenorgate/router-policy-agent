@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/mikenorgate/router-policy-agent/internal/binding"
@@ -46,7 +47,11 @@ func renderFixture(t *testing.T) (*renderer, replacement, policy.Baseline, polic
 		t.Fatal(err)
 	}
 	input := policy.Input{Directory: directory, Bindings: bindings, Now: directory.ObservedAt}
-	candidate, err := compiler.CompileContext(t.Context(), input)
+	authorization, err := compiler.CompileAuthorization(t.Context(), input, policy.CaptureAge())
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := authorization.Snapshot(t.Context())
 	if err != nil || len(candidate.Grants) != 1 {
 		t.Fatalf("synthetic fixture did not compile: %v", err)
 	}
@@ -55,7 +60,7 @@ func renderFixture(t *testing.T) (*renderer, replacement, policy.Baseline, polic
 		t.Fatal(err)
 	}
 	return renderer, replacement{
-		candidate: candidate, cohort: []string{"02:00:00:00:00:01"}, now: input.Now,
+		authorization: authorization, cohort: []string{"02:00:00:00:00:01"}, now: input.Now,
 	}, baseline, input
 }
 
@@ -95,15 +100,21 @@ func TestRendererRetainsAllCompatibleCounterpartsAndProtocols(t *testing.T) {
 		IP: netip.MustParseAddr("10.240.3.10"), Source: "kea_dhcp4", OwnershipID: "synthetic-v4-ownership",
 		ObservedAt: input.Now, ValidUntil: input.Now.Add(time.Hour),
 	})
-	candidate, err := renderer.compiler.CompileContext(t.Context(), input)
-	if err != nil || len(candidate.Grants) != 2 {
+	input.Directory.Groups = append(input.Directory.Groups, rendererAccessGroup(t, "udp-access", false, policy.Rule{
+		ID: "device-datagrams", Direction: policy.FromDevice,
+		Peer: policy.Peer{Addresses: []string{"fdca:1a2b:2::20/128"}}, Protocol: "udp",
+		DestinationPorts: []uint16{6053}, Reason: "Synthetic datagram listener",
+	}))
+	input.Directory.Devices[0].GroupIDs = append(input.Directory.Devices[0].GroupIDs, "udp-access")
+	authorization, err := renderer.compiler.CompileAuthorization(t.Context(), input, policy.CaptureAge())
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := authorization.Snapshot(t.Context())
+	if err != nil || len(candidate.Grants) != 4 {
 		t.Fatalf("counterpart fixture did not compile: %v", err)
 	}
-	replacement.candidate = candidate
-	for _, grant := range candidate.Grants {
-		grant.Protocol, grant.Direction = "udp", policy.FromDevice
-		replacement.candidate.Grants = append(replacement.candidate.Grants, grant)
-	}
+	replacement.authorization = authorization
 	batch, err := renderer.prepare(t.Context(), replacement)
 	if err != nil {
 		t.Fatal(err)
@@ -125,19 +136,98 @@ func TestRendererRetainsAllCompatibleCounterpartsAndProtocols(t *testing.T) {
 
 func TestRendererDuplicateGrantUnion(t *testing.T) {
 	t.Parallel()
-	renderer, input, _, _ := renderFixture(t)
-	duplicate := input.candidate.Grants[0]
-	duplicate.Contributors = []policy.Contributor{{
-		GroupID: "another-group", RuleID: "another-rule", ExpiresAt: input.now.Add(40 * time.Second),
-	}}
-	input.candidate.Grants = append(input.candidate.Grants, duplicate)
-	batch, err := renderer.prepare(t.Context(), input)
-	if err != nil || renderedCounts(t, batch.data)["lease_to6_tcp"] != 1 {
-		t.Fatalf("overlapping grants were not deduplicated: %v", err)
+	synctest.Test(t, func(t *testing.T) {
+		renderer, replacement, _, input := renderFixture(t)
+		expiry := input.Now.Add(40 * time.Second)
+		input.Directory.Groups = append(input.Directory.Groups, rendererAccessGroup(t, "another-group", true, policy.Rule{
+			ID: "another-rule", Direction: policy.ToDevice,
+			Peer: policy.Peer{Addresses: []string{"fdca:1a2b::10/128"}}, Protocol: "tcp",
+			DestinationPorts: []uint16{6053}, Reason: "Synthetic overlapping permission", ExpiresAt: &expiry,
+		}))
+		input.Directory.Devices[0].GroupIDs = append(input.Directory.Devices[0].GroupIDs, "another-group")
+		authorization, err := renderer.compiler.CompileAuthorization(t.Context(), input, policy.CaptureAge())
+		if err != nil {
+			t.Fatal(err)
+		}
+		candidate, err := authorization.Snapshot(t.Context())
+		if err != nil || len(candidate.Grants) != 1 || len(candidate.Grants[0].Contributors) != 2 {
+			t.Fatalf("overlapping raw policies did not retain both contributors: %v", err)
+		}
+		replacement.authorization = authorization
+		batch, err := renderer.prepare(t.Context(), replacement)
+		if err != nil || renderedCounts(t, batch.data)["lease_to6_tcp"] != 1 {
+			t.Fatalf("overlapping grants were not deduplicated: %v", err)
+		}
+		if !bytes.Contains(batch.data, []byte(`"timeout":85`)) {
+			t.Fatal("shorter contributor erased another still-valid permission")
+		}
+		time.Sleep(45 * time.Second)
+		replacement.now = input.Now.Add(20 * time.Second)
+		batch, err = renderer.prepare(t.Context(), replacement)
+		if err != nil || !bytes.Contains(batch.data, []byte(`"timeout":40`)) {
+			t.Fatalf("expired contributor erased or rejuvenated the union: %v", err)
+		}
+	})
+}
+
+func TestRendererPreservesOriginalElapsedDeadline(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		elapsed time.Duration
+		utc     time.Duration
+		timeout string
+		wantErr bool
+	}{
+		{name: "queued with frozen utc", elapsed: 30 * time.Second, timeout: `"timeout":55`},
+		{name: "queued with rolled back utc", elapsed: 45 * time.Second, utc: 20 * time.Second,
+			timeout: `"timeout":40`},
+		{name: "elapsed expiry with fresh utc", elapsed: 91 * time.Second, utc: 20 * time.Second, wantErr: true},
+		{name: "elapsed life too short for preparation", elapsed: 86 * time.Second, wantErr: true},
 	}
-	if !bytes.Contains(batch.data, []byte(`"timeout":85`)) {
-		t.Fatal("shorter contributor erased another still-valid permission")
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				renderer, input, _, _ := renderFixture(t)
+				time.Sleep(test.elapsed)
+				input.now = input.now.Add(test.utc)
+				batch, err := renderer.prepare(t.Context(), input)
+				if test.wantErr {
+					if err == nil || batch != nil {
+						t.Fatal("expired authorization produced a partial replacement")
+					}
+					return
+				}
+				if err != nil || batch == nil || !bytes.Contains(batch.data, []byte(test.timeout)) {
+					t.Fatalf("queued result renewed its lifetime: %v", err)
+				}
+			})
+		})
 	}
+}
+
+func TestRendererCannotApplyEditedDiagnosticSnapshot(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		renderer, input, _, _ := renderFixture(t)
+		before, err := renderer.prepare(t.Context(), input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshot, err := input.authorization.Snapshot(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshot.BaselineHash = "other"
+		snapshot.Grants[0].Peer.Variants = append(snapshot.Grants[0].Peer.Variants, netip.MustParseAddr("10.241.0.10"))
+		snapshot.Grants[0].Contributors[0].ExpiresAt = snapshot.CompiledAt.Add(time.Hour)
+		snapshot.Grants[0].Port = 22
+		after, err := renderer.prepare(t.Context(), input)
+		if err != nil || !bytes.Equal(before.data, after.data) {
+			t.Fatalf("editable snapshot changed an enforced tuple or expiry: %v", err)
+		}
+	})
 }
 
 func TestRendererRejectsUnsafeReplacement(t *testing.T) {
@@ -146,7 +236,7 @@ func TestRendererRejectsUnsafeReplacement(t *testing.T) {
 		name   string
 		change func(*replacement)
 	}{
-		{name: "wrong configuration", change: func(r *replacement) { r.candidate.BaselineHash = "other" }},
+		{name: "missing authorization", change: func(r *replacement) { r.authorization = policy.Authorization{} }},
 		{name: "future compilation", change: func(r *replacement) { r.now = r.now.Add(-time.Second) }},
 		{name: "expired observation", change: func(r *replacement) { r.now = r.now.Add(90 * time.Second) }},
 		{name: "short remaining lease", change: func(r *replacement) { r.now = r.now.Add(86 * time.Second) }},
@@ -155,11 +245,6 @@ func TestRendererRejectsUnsafeReplacement(t *testing.T) {
 		{name: "duplicate cohort", change: func(r *replacement) { r.cohort = append(r.cohort, r.cohort[0]) }},
 		{name: "bad existing cohort", change: func(r *replacement) { r.existingCohort = []string{"unknown"} }},
 		{name: "excess cohort", change: func(r *replacement) { r.cohort = make([]string, 4097) }},
-		{name: "unexpected alias", change: func(r *replacement) {
-			r.candidate.Grants[0].Peer.Variants = append(
-				r.candidate.Grants[0].Peer.Variants, netip.MustParseAddr("fdca:1a2b::20"),
-			)
-		}},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
@@ -177,7 +262,10 @@ func TestRendererRejectsUnsafeReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	input.candidate, err = renderer.compiler.CompileContext(t.Context(), original)
+	if batch, err := renderer.prepare(t.Context(), input); err == nil || batch != nil {
+		t.Fatal("authorization for another baseline produced a transaction")
+	}
+	input.authorization, err = renderer.compiler.CompileAuthorization(t.Context(), original, policy.CaptureAge())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,6 +273,18 @@ func TestRendererRejectsUnsafeReplacement(t *testing.T) {
 	if batch, err := renderer.prepare(t.Context(), input); err == nil || batch != nil {
 		t.Fatal("combined permanent cohort exceeded the configured quota")
 	}
+}
+
+func rendererAccessGroup(t *testing.T, id string, temporary bool, rules ...policy.Rule) policy.Group {
+	t.Helper()
+	data, err := json.Marshal(map[string]any{
+		"schema_version": 1, "kind": "access", "vlan_role": "untrusted", "temporary": temporary, "rules": rules,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := string(data)
+	return policy.Group{ID: id, Name: "synthetic " + id, IsNetwork: true, Policy: &raw}
 }
 
 func TestRendererRejectsMissingOrCanceledDependencies(t *testing.T) {

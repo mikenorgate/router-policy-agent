@@ -22,7 +22,7 @@ type renderer struct {
 }
 
 type replacement struct {
-	candidate      policy.Candidate
+	authorization  policy.Authorization
 	cohort         []string
 	existingCohort []string
 	now            time.Time
@@ -70,28 +70,36 @@ func (renderer *renderer) prepare(ctx context.Context, input replacement) (*prep
 	if renderer == nil || ctx == nil {
 		return nil, errors.New("firewall: missing renderer or context")
 	}
-	validClock := !input.now.IsZero() && !input.now.Before(input.candidate.CompiledAt)
-	validAge := input.now.Before(input.candidate.CompiledAt.Add(renderer.lease))
+	candidate, err := input.authorization.Snapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	validClock := !input.now.IsZero() && !input.now.Before(candidate.CompiledAt)
+	validAge := input.now.Before(candidate.CompiledAt.Add(renderer.lease))
 	if !validClock || !validAge {
 		return nil, errors.New("firewall: candidate clock or age invalid")
 	}
-	if err := renderer.compiler.CheckCandidate(ctx, input.candidate); err != nil {
+	if err := renderer.compiler.CheckCandidate(ctx, candidate); err != nil {
 		return nil, err
 	}
 	cohort, additions, err := renderer.cohort(input)
 	if err != nil {
 		return nil, err
 	}
-	tuples := map[string]map[tupleKey]time.Time{}
+	tuples := map[string]map[tupleKey]time.Duration{}
 	for _, name := range grantSets {
-		tuples[name] = map[tupleKey]time.Time{}
+		tuples[name] = map[tupleKey]time.Duration{}
 	}
-	for _, grant := range input.candidate.Grants {
+	for index, grant := range candidate.Grants {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		if !cohort[grant.MAC] {
 			return nil, errors.New("firewall: grant identity is outside the permanent cohort")
+		}
+		remaining, err := input.authorization.Remaining(index, input.now)
+		if err != nil {
+			return nil, err
 		}
 		compatible := false
 		for _, device := range grant.Device.Variants {
@@ -104,10 +112,7 @@ func (renderer *renderer) prepare(ctx context.Context, input replacement) (*prep
 					interfaceName: grant.Interface, mac: grant.MAC, device: device, peer: peer, port: grant.Port,
 				}
 				name := grantSet(grant.Direction, grant.Protocol, device.Is4())
-				deadline := grant.ExpiresAt()
-				if deadline.After(tuples[name][key]) {
-					tuples[name][key] = deadline
-				}
+				tuples[name][key] = max(tuples[name][key], remaining)
 			}
 		}
 		if !compatible {
@@ -140,7 +145,7 @@ func (renderer *renderer) prepare(ctx context.Context, input replacement) (*prep
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
-			value, err := renderTuple(key, tuples[name][key].Sub(input.now))
+			value, err := renderTuple(key, tuples[name][key])
 			if err != nil {
 				return nil, err
 			}

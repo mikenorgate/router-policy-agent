@@ -11,6 +11,8 @@ import (
 	"os/exec"
 	"testing"
 	"time"
+
+	"github.com/mikenorgate/router-policy-agent/internal/policy"
 )
 
 // This test must run in a disposable network namespace, not a deployment host.
@@ -18,7 +20,7 @@ import (
 // the test target must create the isolation, never use a host network namespace.
 func TestKernelOwnedTransactionAndElementExpiry(t *testing.T) {
 	requireKernelIsolation(t)
-	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	setupKernelObjects(ctx, t)
 	process, err := openProcess(ctx, "/usr/sbin/nft")
@@ -82,7 +84,9 @@ func TestKernelOwnedTransactionAndElementExpiry(t *testing.T) {
 	}
 	// Exercise actual typed compiler output through the deadline-checked runner.
 	renderer, input, _, source := renderFixture(t)
-	now := time.Now().UTC()
+	anchor := policy.CaptureAge()
+	tick := time.Now()
+	now := tick.Round(0).UTC()
 	source.Now, source.Directory.ObservedAt, source.Bindings.ObservedAt = now, now, now
 	for index := range source.Bindings.Records {
 		record := &source.Bindings.Records[index]
@@ -92,7 +96,7 @@ func TestKernelOwnedTransactionAndElementExpiry(t *testing.T) {
 			record.Addresses[address].ValidUntil = now.Add(time.Hour)
 		}
 	}
-	input.candidate, err = renderer.compiler.CompileContext(ctx, source)
+	input.authorization, err = renderer.compiler.CompileAuthorization(ctx, source, anchor)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,6 +125,42 @@ func TestKernelOwnedTransactionAndElementExpiry(t *testing.T) {
 	)
 	if !bytes.Equal(before, after) {
 		t.Fatal("owned operation changed unrelated baseline objects")
+	}
+	// A delayed handoff must expire by the original ownership deadline, not
+	// receive a new relative lease when the compiler result reaches the kernel.
+	anchor = policy.CaptureAge()
+	tick = time.Now()
+	now = tick.Round(0).UTC()
+	source.Now, source.Directory.ObservedAt, source.Bindings.ObservedAt = now, now, now
+	for index := range source.Bindings.Records {
+		record := &source.Bindings.Records[index]
+		record.AssociatedAt = now
+		for address := range record.Addresses {
+			record.Addresses[address].ObservedAt = now
+			record.Addresses[address].ValidUntil = now.Add(10 * time.Second)
+		}
+	}
+	input.authorization, err = renderer.compiler.CompileAuthorization(ctx, source, anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitKernelFixture(ctx, t, 2*time.Second)
+	input.now = time.Now().Round(0).UTC()
+	prepared, err = renderer.prepare(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := process.applyPrepared(ctx, prepared); err != nil {
+		t.Fatalf("delayed compiled transaction failed on the kernel: %v", err)
+	}
+	data, err = process.execute(ctx, inspectOwned, nil)
+	if err != nil || elementCount(t, data, "lease_to6_tcp") != 1 {
+		t.Fatalf("delayed grant was not installed: %v", err)
+	}
+	waitKernelFixture(ctx, t, time.Until(tick.Add(10250*time.Millisecond)))
+	data, err = process.execute(ctx, inspectOwned, nil)
+	if err != nil || elementCount(t, data, "lease_to6_tcp") != 0 || elementCount(t, data, cohortSet) != 1 {
+		t.Fatalf("handoff renewed ownership lifetime or lost classification: %v", err)
 	}
 	// Keep a live IPv4 tuple in the first set. A later missing object must roll
 	// back its attempted flush, not merely preserve an already empty set.
@@ -180,6 +220,17 @@ func TestKernelOwnedTransactionAndElementExpiry(t *testing.T) {
 	data, err = process.execute(ctx, inspectOwned, nil)
 	if err != nil || elementCount(t, data, cohortSet) != 1 || elementCount(t, data, "lease_from4_tcp") != 1 {
 		t.Fatal("failed transaction changed existing grants or persistent cohort")
+	}
+}
+
+func waitKernelFixture(ctx context.Context, t *testing.T, duration time.Duration) {
+	t.Helper()
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
 	}
 }
 

@@ -57,6 +57,15 @@ The collector must revalidate actual association/ownership, not stamp a cache
 with the current time. Losing process-local timing on restart therefore cannot
 make a persisted directory observation or old ownership evidence fresh again.
 
+The apply callback receives `policy.Authorization`, not an editable candidate.
+The helper captures its age anchor before collecting compile-time UTC. The
+compiler owns the resulting grants; diagnostic/state snapshots are deep copies.
+`Remaining` clips each original grant by UTC expiry and elapsed age since that
+sample. Sampling, compilation, durable saves and backend queueing all consume
+the same lifetime. Copying a result does not reset its anchor. Both the anchor
+and authorization reject JSON serialization/deserialization; boot must obtain
+new evidence, never restore one of these process-local values.
+
 The enforce-mode callbacks are a contract for a trusted, restricted backend,
 not proof of packet revocation. Restricted nftables primitives exist separately;
 the callbacks do not yet wire them into a guarded backend. No executable
@@ -106,8 +115,8 @@ become errors or IPC receipts. Execution has a two-second deadline and bounded
 pipe cleanup. The owning signed image still has to authenticate the executable
 and its libraries; ownership checks are not release verification.
 
-The private renderer rechecks a helper-compiled candidate's immutable baseline,
-Untrusted geometry, protected floor, complete endpoint variants and contributor
+The private renderer takes the helper's immutable authorization and rechecks
+its baseline, Untrusted geometry, protected floor, complete endpoint variants and contributor
 deadlines. This check does not authenticate directory input or address ownership.
 Reader IPC still accepts raw directory snapshots, never candidate grants.
 
@@ -142,8 +151,10 @@ explicitly check the corresponding protocol before lookup; names alone are not
 an enforcement mechanism.
 
 Rendering retains every compatible native/NAT counterpart and unions overlapping
-tuple deadlines. Timeout values use JSON seconds, rounded down after subtracting
-two seconds for preparation and 2.25 seconds for execution/cleanup. A batch must
+tuple deadlines. Each remaining lifetime comes from the original authorization,
+not a UTC-only snapshot or a fresh age anchor. Timeout values use JSON seconds,
+rounded down after subtracting two seconds for preparation and 2.25 seconds for
+execution/cleanup. A batch must
 start inside that preparation window, checked after queueing, inspection and
 validation. A private monotonic reading captured before rendering bounds elapsed
 preparation independently of UTC metadata; the wall-clock window is also checked.
@@ -154,18 +165,19 @@ rejects the entire replacement. A 90-second fresh grant therefore gets at most
 85 seconds in this renderer. The deployed kernel's timeout resolution and maximum
 transaction latency still need qualification before activation.
 
-The preparation fence and engine age checks are separate controls. Neither
-attests UTC synchronization, suspend/resume behavior on the selected router,
-or the complete engine-to-kernel deadline handoff. The final backend must preserve
-the engine's conservative age through preparation, queueing and execution.
-Qualified synchronization checks and native failure tests remain activation gates;
-a UTC timestamp alone cannot establish elapsed authorization age.
+The authorization anchor and preparation fence cover different delays. The
+former follows the compiler result into rendering; the latter bounds the
+rendered batch's queueing and execution reserve. Neither qualifies UTC
+synchronization or suspend/resume behavior on the selected router. The final
+guarded backend must use this handoff and pass end-to-end packet expiry tests.
+A UTC timestamp alone cannot establish elapsed authorization age.
 
 `make kernel` runs real set operations in an isolated container. Tests verify
 typed compiler output, actual empty/populated schema inspection, element expiry
 with permanent cohort retention, schema-drift rejection before prepared mutation,
-failed transaction rollback and unchanged unrelated objects. These are not packet
-tests: the fixture installs no forwarding hooks. Existing-flow cutoff, both
+delayed handoff expiry by the original ownership deadline, failed transaction
+rollback and unchanged unrelated objects. These are not packet tests: the fixture
+installs no forwarding hooks. Existing-flow cutoff, both
 directions, guarded return traffic, binding loss/IP reuse, baseline drift and
 translator mapping changes remain activation gates.
 
@@ -183,8 +195,10 @@ failure, replay, non-renewable leases, canceled requests, startup/restart and
 partial backend failures. Deterministic elapsed-time tests reproduce and reject
 cross-request clock rollback, require fresh directory/ownership evidence after
 restart, and check recovery and future-evidence rejection. Clock fuzzing checks
-that accepted time never understates UTC or monotonic age. Compiler cancellation
-tests discard whole candidates;
+that accepted time never understates UTC or monotonic age. Handoff tests cover
+sampling/persistence/queueing delays, deceptive UTC, shorter ownership deadlines,
+overlapping contributors, non-restorable anchors and independent snapshots.
+Compiler cancellation tests discard whole candidates;
 the capacity test exercises 4,096 synthetic identities and the 65,536-entry
 ledger without copying that ledger for each device. These are model and library
 tests, not native packet tests of an enforcement backend.

@@ -171,12 +171,13 @@ func (firewall *memoryFirewall) seal(ctx context.Context, cohort []string) error
 	return nil
 }
 
-func (firewall *memoryFirewall) apply(ctx context.Context, candidate policy.Candidate, cohort []string) error {
+func (firewall *memoryFirewall) apply(ctx context.Context, authorization policy.Authorization, cohort []string) error {
 	*firewall.events = append(*firewall.events, "apply")
-	firewall.candidates = append(firewall.candidates, candidate)
-	if err := ctx.Err(); err != nil {
+	candidate, err := authorization.Snapshot(ctx)
+	if err != nil {
 		return err
 	}
+	firewall.candidates = append(firewall.candidates, candidate)
 	// Also simulate an error after a backend has partially changed its objects:
 	// the engine's error path must remove permits rather than trust that failure.
 	firewall.active = candidate.Grants
@@ -329,8 +330,8 @@ func TestCancellationAfterPartialApplyRemovesPermits(t *testing.T) {
 	defer cancel()
 	options := f.options(Enforce)
 	apply := options.Firewall.Apply
-	options.Firewall.Apply = func(ctx context.Context, candidate policy.Candidate, cohort []string) error {
-		err := apply(ctx, candidate, cohort)
+	options.Firewall.Apply = func(ctx context.Context, authorization policy.Authorization, cohort []string) error {
+		err := apply(ctx, authorization, cohort)
 		cancel()
 		return err
 	}
@@ -453,6 +454,46 @@ func TestClockRollbackCannotRejuvenateEvidence(t *testing.T) {
 		receipt, err := engine.Process(t.Context(), f.directory)
 		if err == nil || receipt.Status != "" || len(f.firewall.active) != 0 || len(f.firewall.candidates) != 1 {
 			t.Fatalf("old evidence regained a lease after clock rollback: %+v, %v", receipt, err)
+		}
+	})
+}
+
+func TestBackendHandoffRetainsSamplingPersistenceAndQueueAge(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		f := newFixture(t)
+		options := f.options(Enforce)
+		reads := 0
+		options.Clock = func() time.Time {
+			reads++
+			utc := f.utc()
+			if reads == 3 {
+				// The compile-time UTC sample is obtained before this delay.
+				// Its conservative engine clamp cannot turn the delay into life.
+				time.Sleep(100 * time.Millisecond)
+			}
+			return utc
+		}
+		save := options.State.Save
+		options.State.Save = func(ctx context.Context, document state.Document) error {
+			if f.store.saves == 1 {
+				time.Sleep(12 * time.Second)
+			}
+			return save(ctx, document)
+		}
+		options.Firewall.Apply = func(ctx context.Context, authorization policy.Authorization, cohort []string) error {
+			// A trusted backend must use the result's original monotonic anchor
+			// after queueing, even if a UTC reading remains deceptively fresh.
+			time.Sleep(15 * time.Second)
+			remaining, err := authorization.Remaining(0, f.directory.ObservedAt.Add(time.Second))
+			if err != nil || remaining != 62800*time.Millisecond {
+				t.Fatalf("backend handoff lost original age: remaining=%v, error=%v", remaining, err)
+			}
+			return f.firewall.apply(ctx, authorization, cohort)
+		}
+		engine := f.engine(t, options)
+		if receipt, err := engine.Process(t.Context(), f.directory); err != nil || receipt.Status != ipc.StatusApplied {
+			t.Fatalf("valid bounded handoff failed: %+v, %v", receipt, err)
 		}
 	})
 }

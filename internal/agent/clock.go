@@ -3,6 +3,8 @@ package agent
 import (
 	"errors"
 	"time"
+
+	"github.com/mikenorgate/router-policy-agent/internal/policy"
 )
 
 // A small sampling/slew lag may shorten a lease, never extend it. Larger UTC
@@ -12,6 +14,7 @@ const maximumClockLag = 250 * time.Millisecond
 type clockReading struct {
 	utc           time.Time
 	authorization time.Time
+	anchor        policy.AgeAnchor
 }
 
 // helperClock retains a process-local monotonic anchor independently of UTC
@@ -48,6 +51,9 @@ func (clock *helperClock) advance(utc, tick time.Time) (time.Time, error) {
 }
 
 func (engine *Engine) now() (clockReading, error) {
+	// Pin before the UTC callback: collecting the reading also consumes the
+	// lifetime handed to the backend, even if that callback is slow.
+	anchor := policy.CaptureAge()
 	utc := engine.options.Clock().Round(0).UTC()
 	// Sample after the trusted UTC callback: time spent collecting that reading
 	// cannot be omitted from elapsed authorization age.
@@ -55,5 +61,5 @@ func (engine *Engine) now() (clockReading, error) {
 	if err != nil {
 		return clockReading{}, err
 	}
-	return clockReading{utc: utc, authorization: authorization}, nil
+	return clockReading{utc: utc, authorization: authorization, anchor: anchor}, nil
 }

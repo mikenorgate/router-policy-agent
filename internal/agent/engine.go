@@ -37,10 +37,12 @@ type Persistence struct {
 // both existing and supplied cohort members, without touching unrelated rules.
 // Apply must atomically replace owned tuples, preserve the closed cohort and
 // enforce absolute kernel deadlines, the floor and mapping-generation checks.
+// It must retain Authorization's original age anchor, not rebuild a lifetime
+// from its diagnostic snapshot or a newly sampled UTC clock.
 // A successful callback is not itself packet-level evidence of those properties.
 type Enforcement struct {
 	Seal  func(context.Context, []string) error
-	Apply func(context.Context, policy.Candidate, []string) error
+	Apply func(context.Context, policy.Authorization, []string) error
 }
 
 // Options contains privileged local dependencies. Bindings must reread an
@@ -208,9 +210,13 @@ func (engine *Engine) Process(
 	if err := engine.checkStartupBindings(ctx, bindings); err != nil {
 		return ipc.Receipt{}, err
 	}
-	candidate, err := engine.compiler.CompileContext(ctx, policy.Input{
+	authorization, err := engine.compiler.CompileAuthorization(ctx, policy.Input{
 		Directory: snapshot, Bindings: bindings, Ledger: observed.Ledger, Now: now.authorization,
-	})
+	}, now.anchor)
+	if err != nil {
+		return ipc.Receipt{}, err
+	}
+	candidate, err := authorization.Snapshot(ctx)
 	if err != nil {
 		return ipc.Receipt{}, err
 	}
@@ -228,14 +234,14 @@ func (engine *Engine) Process(
 	if err != nil {
 		return ipc.Receipt{}, err
 	}
-	for _, grant := range candidate.Grants {
-		if !now.authorization.Before(grant.ExpiresAt()) {
-			return ipc.Receipt{}, errors.New("agent: authorization expired before application")
+	for index := range candidate.Grants {
+		if _, err := authorization.Remaining(index, now.authorization); err != nil {
+			return ipc.Receipt{}, fmt.Errorf("agent: authorization expired before application: %w", err)
 		}
 	}
 	status := ipc.StatusShadow
 	if engine.options.Mode == Enforce {
-		if err := engine.options.Firewall.Apply(ctx, candidate, slices.Clone(cohort)); err != nil {
+		if err := engine.options.Firewall.Apply(ctx, authorization, slices.Clone(cohort)); err != nil {
 			return ipc.Receipt{}, fmt.Errorf("agent: apply owned policy: %w", err)
 		}
 		status = ipc.StatusApplied
