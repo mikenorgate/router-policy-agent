@@ -252,6 +252,9 @@ type packetDatagram struct {
 	sourceMAC, destinationMAC   string
 	sourcePort, destinationPort uint16
 	payload                     string
+	isTCP                       bool
+	tcpFlags                    byte
+	sequence, acknowledgment    uint32
 }
 
 func packetFrame(t *testing.T, datagram packetDatagram) []byte {
@@ -259,23 +262,36 @@ func packetFrame(t *testing.T, datagram packetDatagram) []byte {
 	if datagram.source.Is4() != datagram.destination.Is4() || len(datagram.payload) > 128 {
 		t.Fatal("invalid synthetic packet geometry")
 	}
-	udp := make([]byte, 8+len(datagram.payload))
-	binary.BigEndian.PutUint16(udp[0:2], datagram.sourcePort)
-	binary.BigEndian.PutUint16(udp[2:4], datagram.destinationPort)
-	// The payload cap above bounds the complete UDP datagram below 137 bytes.
-	if len(udp) > 65535 {
+	transportHeader, transportProtocol := 8, byte(17)
+	if datagram.isTCP {
+		transportHeader, transportProtocol = 20, 6
+	}
+	transport := make([]byte, transportHeader+len(datagram.payload))
+	binary.BigEndian.PutUint16(transport[0:2], datagram.sourcePort)
+	binary.BigEndian.PutUint16(transport[2:4], datagram.destinationPort)
+	// The payload cap bounds the TCP/UDP segment to at most 148 bytes.
+	if len(transport) > 65535 {
 		t.Fatal("synthetic datagram length exceeds the wire field")
 	}
-	length := uint16(len(udp) & 0xffff)
-	binary.BigEndian.PutUint16(udp[4:6], length)
-	copy(udp[8:], datagram.payload)
+	length := uint16(len(transport) & 0xffff)
+	checksumOffset := 6
+	if datagram.isTCP {
+		binary.BigEndian.PutUint32(transport[4:8], datagram.sequence)
+		binary.BigEndian.PutUint32(transport[8:12], datagram.acknowledgment)
+		transport[12], transport[13] = 0x50, datagram.tcpFlags
+		binary.BigEndian.PutUint16(transport[14:16], 4096)
+		checksumOffset = 16
+	} else {
+		binary.BigEndian.PutUint16(transport[4:6], length)
+	}
+	copy(transport[transportHeader:], datagram.payload)
 	ip := make([]byte, 40)
 	protocol := uint16(0x86dd)
 	pseudo := make([]byte, 40)
 	if datagram.source.Is4() {
 		protocol = 0x0800
 		ip, pseudo = make([]byte, 20), make([]byte, 12)
-		ip[0], ip[8], ip[9] = 0x45, 64, 17
+		ip[0], ip[8], ip[9] = 0x45, 64, transportProtocol
 		binary.BigEndian.PutUint16(ip[2:4], 20+length)
 		source, destination := datagram.source.As4(), datagram.destination.As4()
 		copy(ip[12:16], source[:])
@@ -283,10 +299,10 @@ func packetFrame(t *testing.T, datagram packetDatagram) []byte {
 		binary.BigEndian.PutUint16(ip[10:12], packetChecksum(ip))
 		copy(pseudo[0:4], source[:])
 		copy(pseudo[4:8], destination[:])
-		pseudo[9] = 17
+		pseudo[9] = transportProtocol
 		binary.BigEndian.PutUint16(pseudo[10:12], length)
 	} else {
-		ip[0], ip[6], ip[7] = 0x60, 17, 64
+		ip[0], ip[6], ip[7] = 0x60, transportProtocol, 64
 		binary.BigEndian.PutUint16(ip[4:6], length)
 		source, destination := datagram.source.As16(), datagram.destination.As16()
 		copy(ip[8:24], source[:])
@@ -294,14 +310,14 @@ func packetFrame(t *testing.T, datagram packetDatagram) []byte {
 		copy(pseudo[0:16], source[:])
 		copy(pseudo[16:32], destination[:])
 		binary.BigEndian.PutUint32(pseudo[32:36], uint32(length))
-		pseudo[39] = 17
+		pseudo[39] = transportProtocol
 	}
-	checksum := packetChecksum(append(pseudo, udp...))
+	checksum := packetChecksum(append(pseudo, transport...))
 	if checksum == 0 {
 		checksum = 0xffff
 	}
-	binary.BigEndian.PutUint16(udp[6:8], checksum)
-	frame := make([]byte, 14, 14+len(ip)+len(udp))
+	binary.BigEndian.PutUint16(transport[checksumOffset:checksumOffset+2], checksum)
+	frame := make([]byte, 14, 14+len(ip)+len(transport))
 	for index, address := range []string{datagram.destinationMAC, datagram.sourceMAC} {
 		mac, err := net.ParseMAC(address)
 		if err != nil || len(mac) != 6 {
@@ -310,7 +326,7 @@ func packetFrame(t *testing.T, datagram packetDatagram) []byte {
 		copy(frame[index*6:(index+1)*6], mac)
 	}
 	binary.BigEndian.PutUint16(frame[12:14], protocol)
-	return append(append(frame, ip...), udp...)
+	return append(append(frame, ip...), transport...)
 }
 
 func packetChecksum(data []byte) uint16 {
@@ -395,7 +411,7 @@ func receivePacket(ctx context.Context, t *testing.T, endpoint packetEndpoint, s
 		if !ok || link.Pkttype == syscall.PACKET_OUTGOING || length != len(sent) {
 			continue
 		}
-		// Match the UDP segment, including the unique payload and checksum.
+		// Match the transport segment, including its unique payload and checksum.
 		header := 34
 		if binary.BigEndian.Uint16(sent[12:14]) == 0x86dd {
 			header = 54

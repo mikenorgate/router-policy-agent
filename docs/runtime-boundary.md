@@ -1,7 +1,8 @@
 # Local transport and durable state
 
 These packages implement the helper boundary, not a working firewall service.
-No current command starts the transport or updates nftables. The remaining
+No current command starts the transport or updates nftables. Guard layouts are
+exercised only by isolated test fixtures, not a production backend. The remaining
 runtime and packet tests are listed in [the activation gates](architecture.md#implementation-gates).
 
 ## Socket contract
@@ -114,6 +115,9 @@ opens a shell. Output is bounded and drained; raw nftables diagnostics do not
 become errors or IPC receipts. Execution has a two-second deadline and bounded
 pipe cleanup. The owning signed image still has to authenticate the executable
 and its libraries; ownership checks are not release verification.
+The executor pins the creating OS thread until the bounded child wait completes:
+Linux's parent-death signal follows that thread, which can terminate before its
+process ([Go SysProcAttr documentation](https://pkg.go.dev/syscall#SysProcAttr)).
 
 The private renderer takes the helper's immutable authorization and rechecks
 its baseline, Untrusted geometry, protected floor, complete endpoint variants and contributor
@@ -202,6 +206,74 @@ lease-based authorization, protected-floor ordering, spoof resistance, mapping
 coordination or translated return identity. The fixture's broad accepts and
 marks are observations, not deployable policy. The final backend still needs
 independently checked mark ownership/reset and atomic guard/lease updates.
+
+## Guard layout and atomic mirrors
+
+`guardLayout` generates fixed image-owned rules from a validated, copied router
+baseline. It defines an early forward guard, a regular `permit_flow` chain and
+final Ethernet egress guards on the reviewed role interfaces. Runtime updates
+cannot select rules, hooks, priorities or marks. No current executable installs
+this layout or accepts its rule program from the reader.
+
+One logical lease produces three named representations:
+
+| Object | Tuple key | Lifetime |
+| --- | --- | --- |
+| Forward lease | Interface, MAC, device IP, peer IP, listener port | Bounded lease |
+| Incoming projection | Interface, device IP, peer IP, listener port | Bounded lease |
+| Final egress mirror | Interface, actual destination MAC, device IP, peer IP, listener port | Bounded lease |
+| Managed MAC sets in both tables | Canonical MAC | No timeout or runtime removal |
+| Classified IPv4/IPv6 sets | Previously permitted device representation | No timeout or runtime removal |
+
+The forward guard checks the initiation direction, protocol, connection state
+and original destination listener against a current lease. It checks outgoing
+MAC identity directly. Incoming lookup projects the IP tuple because the device
+MAC is not visible there; final egress checks that actual MAC against the full
+mirror. A projected permit that reaches a different MAC drops, even when that
+new MAC is not managed. Unknown addresses on a managed MAC also drop. Historical
+classified addresses remain closed rather than falling through a legacy permit.
+
+Per-packet mark bits `0xff00ffff` carry direction and listener to final egress;
+the other bits are preserved. The early guard clears its bits on every packet.
+The selected build needs two assignments to combine the 16-bit conntrack port
+with a 32-bit direction tag. Egress uses the 32-bit `mark` datatype for that
+bounded port value; it does not query conntrack. This reservation still needs an
+independent audit against every image-owned mark user and privileged writer.
+
+The later permit chain rechecks the lease instead of treating a cached mark as
+authorization. The image must call it in the same table after protected checks
+and before ordinary application default deny. Other base-chain drops remain
+authoritative. This project has not yet integrated or independently verified
+that complete router chain graph.
+
+`prepareGuards` retains the logical renderer's original preparation fence and
+derives all 24 lease sets as one transaction. MAC additions are mirrored into
+both permanent cohort sets; observed device representations append to permanent
+address classification. Projection duplicates retain the longest valid lease;
+final mirrors keep each exact MAC and its own deadline. `validateGuardBatch`
+reconstructs these mirrors and rejects missing or changed counterparts, altered
+timeouts, extra operations and permanent-set removal. All compiler-derived
+native/NAT representations remain in the transaction; retaining them is not
+proof of their translated packet path.
+
+The native fixture compiles fresh synthetic directory/binding input, renders
+the immutable authorization and applies its validated mirrors. It routes real
+IPv4/IPv6 TCP handshakes and UDP datagrams. Explicit revocation blocks existing
+TCP/UDP traffic in both initiation directions before the fixture's established
+accept; UDP kernel expiry also blocks a previously working flow. Separate cases
+check reverse-initiation denial, unknown addresses behind a legacy permit,
+changed destination MACs with and without a live lease, and an unrelated legacy
+flow that still works. These are synthetic ownership records, not a qualified
+NAS or address collector.
+
+Permanent here means surviving lease replacement and expiry, not reboot.
+Durable address restoration and closed boot ordering are still required, as
+are the guarded-table schema verifier, writer fencing and executor wiring.
+Related ICMP/PMTU and other required control traffic need explicit reviewed
+paths; they must not be enabled by a broad bypass. P01–P10 ordering, all-role
+Security tests, synchronized UTC/suspend behavior, DSR and native/translated
+return correlation remain activation gates. No production deployment is
+authorized by these fixtures.
 
 ## Verification
 

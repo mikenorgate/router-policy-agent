@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -182,6 +183,11 @@ func (process *process) run(ctx context.Context, input commandInput) ([]byte, er
 	command.Stdin = bytes.NewReader(input.payload)
 	stdout, stderr := boundedOutput{maximum: maximumOutput}, boundedOutput{maximum: 64 << 10}
 	command.Stdout, command.Stderr = &stdout, &stderr
+	// Linux Pdeathsig follows the creating OS thread, not just its process.
+	// Keep that thread alive until the bounded child wait/cleanup completes.
+	// See https://pkg.go.dev/syscall#SysProcAttr.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	if err := command.Run(); err != nil {
 		// libnftables diagnostics can contain private endpoints or the rejected
 		// program. Keep them out of errors, IPC receipts and status responses.

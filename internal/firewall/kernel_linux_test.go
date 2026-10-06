@@ -23,6 +23,12 @@ func TestKernelOwnedTransactionAndElementExpiry(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	setupKernelObjects(ctx, t)
+	t.Cleanup(func() {
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 2*time.Second)
+		defer cancel()
+		kernelFixtureCommand(cleanup, t, "delete", "table", "inet", ownedTable)
+		kernelFixtureCommand(cleanup, t, "delete", "table", "inet", "unrelated_fixture")
+	})
 	process, err := openProcess(ctx, "/usr/sbin/nft")
 	if err != nil {
 		t.Fatal(err)
