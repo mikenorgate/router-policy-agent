@@ -10,6 +10,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/mikenorgate/router-policy-agent/internal/agent"
 	"github.com/mikenorgate/router-policy-agent/internal/hostfs"
 	"github.com/mikenorgate/router-policy-agent/internal/strictjson"
 )
@@ -23,6 +24,7 @@ const maximumHelperConfig = 16 << 10
 // It cannot initialize state, override clocks, supply bindings or select hooks.
 type helperConfig struct {
 	SchemaVersion      int              `json:"schema_version"`
+	Mode               agent.Mode       `json:"mode"`
 	Profile            helperProfile    `json:"profile"`
 	GenerationDir      string           `json:"generation_directory"`
 	StateDir           string           `json:"state_directory"`
@@ -48,7 +50,7 @@ func decodeHelperConfig(ctx context.Context, data []byte) (helperConfig, error) 
 		return helperConfig{}, err
 	}
 	keys := []string{
-		"schema_version", "profile", "generation_directory", "state_directory", "nft_executable",
+		"schema_version", "mode", "profile", "generation_directory", "state_directory", "nft_executable",
 		"reader_uid", "operator_uid", "request_timeout_ms", "request_socket", "status_socket", "expected_generation",
 	}
 	if err := strictjson.Object(data, keys, nil, maximumHelperConfig); err != nil {
@@ -78,6 +80,9 @@ func decodeHelperConfig(ctx context.Context, data []byte) (helperConfig, error) 
 }
 
 func (c helperConfig) validate() error {
+	if c.Mode != agent.Shadow && c.Mode != agent.Enforce {
+		return errors.New("firewall: helper requires an explicit valid mode")
+	}
 	validIDs := c.ReaderUID != 0 && c.OperatorUID != 0 && c.ReaderUID != c.OperatorUID
 	validTimeout := c.RequestTimeoutMS > 0 && c.RequestTimeoutMS <= 10_000
 	if c.SchemaVersion != 1 || !validIDs || !validTimeout || !generationHash(c.Profile.SHA256) {

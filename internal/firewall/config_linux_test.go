@@ -9,11 +9,14 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/mikenorgate/router-policy-agent/internal/agent"
 )
 
 func helperConfigFixture() helperConfig {
 	return helperConfig{
 		SchemaVersion: 1,
+		Mode:          agent.Enforce,
 		Profile:       helperProfile{Directory: "/opt/policy/profile", SHA256: strings.Repeat("a", 64)},
 		GenerationDir: "/run/policy/writers", StateDir: "/var/lib/policy", NFTExecutable: "/usr/sbin/nft",
 		ReaderUID: 65534, OperatorUID: 65533, RequestTimeoutMS: 2000,
@@ -95,6 +98,9 @@ func TestHelperConfigRejectsUnsafeResourceGeometry(t *testing.T) {
 		change func(*helperConfig)
 	}{
 		{name: "schema", change: func(c *helperConfig) { c.SchemaVersion = 2 }},
+		{name: "missing mode", change: func(c *helperConfig) { c.Mode = "" }},
+		{name: "unknown mode", change: func(c *helperConfig) { c.Mode = "apply" }},
+		{name: "case variant mode", change: func(c *helperConfig) { c.Mode = "Shadow" }},
 		{name: "root reader", change: func(c *helperConfig) { c.ReaderUID = 0 }},
 		{name: "root operator", change: func(c *helperConfig) { c.OperatorUID = 0 }},
 		{name: "same identity", change: func(c *helperConfig) { c.OperatorUID = c.ReaderUID }},
@@ -134,6 +140,11 @@ func TestHelperConfigRejectsUnsafeResourceGeometry(t *testing.T) {
 		if _, err := decodeHelperConfig(t.Context(), helperConfigBytes(t, config)); err != nil {
 			t.Fatal("valid timeout boundary rejected")
 		}
+	}
+	config := helperConfigFixture()
+	config.Mode = agent.Shadow
+	if got, err := decodeHelperConfig(t.Context(), helperConfigBytes(t, config)); err != nil || got.Mode != agent.Shadow {
+		t.Fatal("explicit shadow configuration was rejected or changed to enforcement")
 	}
 }
 

@@ -75,6 +75,12 @@ the separate reader/operator listeners. Both start after closed restoration and
 stop before backend resources are released. No installed helper or real binding
 producer is supplied yet. See [configuration and ownership](docs/runtime-boundary.md#checked-helper-configuration-and-ownership).
 
+The helper configuration now requires an explicit `shadow` or `enforce` mode.
+Shadow wiring supplies no firewall callbacks, including startup and shutdown
+sealing. A real non-root IPC fixture checks that shadow compilation leaves the
+complete kernel ruleset unchanged. Mode belongs to root-owned configuration,
+not directory attributes or reader requests; this is not a live deployment.
+
 Source installation is also available:
 
 ```sh

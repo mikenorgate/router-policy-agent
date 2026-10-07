@@ -20,8 +20,10 @@ import (
 // executable must supply an already checked store and qualified binding source.
 // Initialization, clock overrides, alternate catalogs and firewall callbacks are
 // deliberately absent. The caller keeps these dependencies open until serve
-// returns, including its bounded cleanup.
+// returns, including its bounded cleanup. Mode is explicit helper authority;
+// shadow construction supplies no firewall callbacks.
 type serviceOptions struct {
+	mode           agent.Mode
 	state          agent.Persistence
 	bindings       func(context.Context) (binding.Snapshot, error)
 	readerUID      uint32
@@ -50,6 +52,9 @@ func (b *guardedBackend) newService(options serviceOptions) (*guardedService, er
 	if options.readerUID == 0 {
 		return nil, errors.New("firewall: service requires a distinct non-root reader")
 	}
+	if options.mode != agent.Shadow && options.mode != agent.Enforce {
+		return nil, errors.New("firewall: service requires an explicit valid mode")
+	}
 	profile := b.options.profile
 	compiler, err := policy.New(profile.baseline)
 	if err != nil {
@@ -58,9 +63,15 @@ func (b *guardedBackend) newService(options serviceOptions) (*guardedService, er
 	if compiler.BaselineHash() != profile.renderer.compiler.BaselineHash() {
 		return nil, errors.New("firewall: helper catalog differs from paired backend")
 	}
+	// Shadow has no firewall callbacks at all, including startup/failure/exit
+	// sealing. Only trusted helper configuration may select enforcement.
+	callbacks := agent.Enforcement{}
+	if options.mode == agent.Enforce {
+		callbacks = agent.Enforcement{Seal: b.seal, Apply: b.apply}
+	}
 	engine, err := agent.New(profile.baseline, agent.Options{
-		Mode: agent.Enforce, State: options.state, Bindings: options.bindings,
-		Clock: b.options.clock, Firewall: agent.Enforcement{Seal: b.seal, Apply: b.apply},
+		Mode: options.mode, State: options.state, Bindings: options.bindings,
+		Clock: b.options.clock, Firewall: callbacks,
 	})
 	if err != nil {
 		return nil, profileFailure("helper construction failed", err)
@@ -75,9 +86,10 @@ func (b *guardedBackend) newService(options serviceOptions) (*guardedService, er
 }
 
 // serve adopts a supervisor-created listener only for the first valid root
-// call. Startup clears permits and restores durable classification before any
-// request is accepted. Every adopted attempt seals on exit, including failed or
-// canceled startup, with an independent two-second deadline. It never unlinks
+// call. Enforce startup clears permits and restores durable classification
+// before any request is accepted. Every enforcing attempt seals on exit,
+// including failed or canceled startup, with an independent two-second deadline.
+// Shadow has no write callbacks. It never unlinks
 // the supervisor's path, initializes state, creates guards or closes caller-owned
 // dependencies. Rejected concurrent/repeated calls retain their own listeners.
 func (s *guardedService) serve(ctx context.Context, listener *net.UnixListener) error {
@@ -91,8 +103,9 @@ type serviceListeners struct {
 }
 
 // serveListeners admits the optional status listener only as a complete,
-// separate pair. Both servers start after deny-only restoration, and are joined
-// before engine sealing/dependency cleanup. Failure of either stops both.
+// separate pair. Both servers start after engine startup (including deny-only
+// restoration in enforce mode), and are joined before engine stop/dependency
+// cleanup. Failure of either stops both.
 func (s *guardedService) serveListeners(ctx context.Context, listeners serviceListeners) (result error) {
 	validService := s != nil && s.engine != nil && s.server != nil
 	validStatus := (listeners.status == nil) == (listeners.operator == nil)

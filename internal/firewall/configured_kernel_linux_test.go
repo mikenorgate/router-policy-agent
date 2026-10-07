@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mikenorgate/router-policy-agent/internal/agent"
 	"github.com/mikenorgate/router-policy-agent/internal/binding"
 	"github.com/mikenorgate/router-policy-agent/internal/ipc"
 	"github.com/mikenorgate/router-policy-agent/internal/state"
@@ -79,6 +80,91 @@ func TestKernelGuardedServiceConfiguredSupervision(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			configuredSupervisionFixture(t, name)
 		})
+	}
+}
+
+func TestKernelGuardedServiceConfiguredShadowDoesNotMutateRuleset(t *testing.T) {
+	requireKernelIsolation(t)
+	t.Cleanup(func() { requireKernelIsolation(t) })
+	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
+	defer cancel()
+	backend, writerRoot := setupBackendPacketFixture(ctx, t)
+	options := configuredKernelOptions(ctx, t, backend, writerRoot)
+	config, err := loadHelperConfig(ctx, options.directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.Mode = agent.Shadow
+	if err := os.WriteFile(filepath.Join(options.directory, helperConfigFile), helperConfigBytes(t, config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before := kernelFixtureCommand(ctx, t, "list", "ruleset")
+	bindings := make(chan binding.Snapshot, 1)
+	options.bindings = func(ctx context.Context) (binding.Snapshot, error) {
+		select {
+		case snapshot := <-bindings:
+			return snapshot, nil
+		case <-ctx.Done():
+			return binding.Snapshot{}, ctx.Err()
+		}
+	}
+	serveCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	var worker sync.WaitGroup
+	result := make(chan error, 1)
+	worker.Go(func() { result <- runConfiguredWithClock(serveCtx, options, time.Now) })
+	finish := sync.OnceValue(func() error {
+		worker.Wait()
+		return <-result
+	})
+	t.Cleanup(func() {
+		stop()
+		if err := finish(); !errors.Is(err, context.Canceled) {
+			t.Errorf("configured shadow cleanup: %v", err)
+		}
+	})
+	executable := serviceReaderExecutable(t, filepath.Dir(options.requests.Addr().String()))
+	// #nosec G204 -- Current fixture executable, fixed status entry point and synthetic socket.
+	command := exec.CommandContext(ctx, executable, "-test.run=^TestConfiguredServiceStartupProcess$")
+	command.Env = []string{
+		"RPA_CONFIGURED_STATUS_CHILD=1", "RPA_CONFIGURED_STATUS_SOCKET=" + options.status.Addr().String(),
+		"RPA_CONFIGURED_STATUS_MODE=shadow",
+	}
+	command.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: 65533, Gid: 0, NoSetGroups: true}}
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("configured shadow startup: %v: %s", err, output)
+	}
+	input := backendInputFixture(t, 0)
+	bindings <- input.Bindings
+	serviceReaderSubmit(
+		ctx,
+		t,
+		executable,
+		options.requests.Addr().String(),
+		backend.options.profile.renderer.compiler.BaselineHash(),
+		input.Directory,
+		"shadow",
+	)
+	if after := kernelFixtureCommand(ctx, t, "list", "ruleset"); !bytes.Equal(before, after) {
+		t.Fatal("configured shadow compilation mutated the kernel ruleset")
+	}
+	stop()
+	if err := finish(); !errors.Is(err, context.Canceled) {
+		t.Fatal("configured shadow service did not join both listeners")
+	}
+	if after := kernelFixtureCommand(ctx, t, "list", "ruleset"); !bytes.Equal(before, after) {
+		t.Fatal("configured shadow shutdown mutated the kernel ruleset")
+	}
+	store, err := state.Open(ctx, state.Options{Directory: config.StateDir, OwnerUID: 0})
+	if err != nil {
+		t.Fatal("configured shadow service retained the state lock")
+	}
+	document, loadErr := store.Load(ctx)
+	if err := errors.Join(loadErr, store.Close()); err != nil {
+		t.Fatal(err)
+	}
+	if document.DirectoryHash == "" || len(document.CohortMACs) == 0 {
+		t.Fatal("configured shadow service did not retain its validated deny-only history")
 	}
 }
 
@@ -314,7 +400,9 @@ func TestConfiguredServiceStartupProcess(t *testing.T) {
 	})
 	validStartup := err == nil && report.HelperState == "ready" && report.LastGrantCount == 0
 	validKernel := report.FloorState == "matches_pinned_contract" && report.KernelTupleCount != nil
-	if !validStartup || !validKernel || *report.KernelTupleCount != 0 {
+	expectedMode := os.Getenv("RPA_CONFIGURED_STATUS_MODE")
+	validMode := expectedMode == "" || report.Mode == expectedMode
+	if !validStartup || !validKernel || !validMode || *report.KernelTupleCount != 0 {
 		t.Fatal("configured helper did not restore a closed inspected state before accepting status")
 	}
 }

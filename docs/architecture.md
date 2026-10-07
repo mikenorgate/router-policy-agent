@@ -71,8 +71,9 @@ guarded backend. Service activation, production audit provenance and synchronize
 time remain requirements, not claims made by a successful status query.
 
 Checked private configuration now opens the paired profile, executable, writer
-fence and state store. A configured runner starts the separate reader/operator
-listeners after closed restoration, cancels both when either fails, and joins
+fence and state store. An enforcing configured runner starts the separate
+reader/operator listeners after closed restoration, cancels both when either
+fails, and joins
 them before sealing and releasing its resources. An isolated native packet test
 exercises that complete wiring. It supplies no real binding producer or installed
 helper executable; release authentication, boot ordering and the remaining path
@@ -84,6 +85,13 @@ malformed timestamps reject authorization; native packet tests cover startup
 sealing and request-triggered revocation on clock loss. This does not qualify
 the time reference, accuracy, suspend/resume or boot ordering. See the
 [clock check and its limits](runtime-boundary.md#linux-synchronization-check).
+
+Checked helper configuration requires an explicit `shadow` or `enforce` mode.
+Shadow wiring supplies no firewall callbacks, while retaining input validation
+and durable deny-only history. A configured native fixture obtains a shadow
+receipt through non-root IPC and compares the complete ruleset before and after
+the joined lifecycle. This is not an installed shadow deployment or permission
+to skip source, release or packet-path qualification.
 
 The root-only recovery command now seals only existing helper-owned application
 grants under the shared fence and exclusive state lock. It retains kernel

@@ -681,6 +681,7 @@ All configuration fields are required:
 | Field | Contract |
 | --- | --- |
 | `schema_version` | Exactly `1` |
+| `mode` | Exactly `shadow` or `enforce`; missing/unknown values reject, with no default |
 | `profile.directory`, `profile.sha256` | Private profile directory and independently supplied canonical SHA-256 pin |
 | `generation_directory` | Private root for the cooperative writer fence/record |
 | `expected_generation` | Exact schema-1 ready vector: sequence, reviewed floor hash and mapping hash |
@@ -703,18 +704,35 @@ Partial failure closes previously opened resources. Configuration contains no
 clock override, state-reset option, binding fixture, firewall program or hook
 selection. A separate qualified binding producer remains mandatory.
 
+The root-owned mode is fixed for the service lifetime. Reader requests cannot
+select or change it. In `shadow`, the engine has no firewall callbacks: startup,
+successful compilation, processing failure and shutdown cannot apply or seal
+kernel rules. It still validates input, time and existing durable history, and
+records deny-only evidence and immutable ledger anchors. A `shadow` receipt is
+not permission. Status may inspect the kernel through the read-only backend.
+
+Changing modes requires a separately approved stop/restart, not a group edit or
+reader flag. Before replacing an enforcing helper with a shadow helper, verify
+that the former sealed its owned grants; use the scoped recovery command if
+that shutdown was not verified. Shadow mode does not remove grants left by
+another process or establish a closed production guard.
+
 The configured runner adopts two supervisor-created listeners only when their
-paths match its configuration. Closed startup restores durable classification
-before either server accepts a request. Each server has its own authorized UID;
-failure of either cancels the other. The runner joins both servers, performs
-bounded sealing, closes both descriptors without unlinking their paths, then
-releases its state lock and backend resources. It never creates sockets or
-initializes missing history.
+paths match its configuration. In `enforce`, closed startup restores durable
+classification before either server accepts a request. Each server has its own
+authorized UID; failure of either cancels the other. The runner joins both
+servers, performs bounded sealing in `enforce`, closes both descriptors without
+unlinking their paths, then releases its state lock and backend resources. It
+never creates sockets or initializes missing history.
 
 Isolated tests run this configuration-to-backend path with real non-root reader
 and operator clients. Native IPv4/IPv6 initiation/reply traffic is permitted
 after a fresh transaction and revoked when the status listener fails, without
 parent cancellation. State remains deny-only and the exclusive lock is released.
+An additional configured shadow fixture obtains a shadow receipt through a real
+non-root reader and checks that the complete kernel ruleset remains identical
+across startup, compilation and joined shutdown. Unit tests use an unusable
+backend to prove shadow startup, rejection and shutdown have no write callbacks.
 The lower-level test assembler supplies a controlled clock projection; these
 packet tests neither change nor depend on the host's synchronization state.
 These fixtures do not qualify real bindings, release/pin provenance, encrypted

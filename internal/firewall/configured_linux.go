@@ -111,7 +111,7 @@ type configuredResources struct {
 
 // Opening is inert: the state lock and checked executable/fence descriptors
 // are retained, but no state load/write, command execution or binding read takes
-// place until closed startup. Every partial opening closes earlier resources.
+// place until engine startup. Every partial opening closes earlier resources.
 func openConfiguredResources(
 	ctx context.Context,
 	config helperConfig,
@@ -151,6 +151,7 @@ func openConfiguredWithClock(
 	r.backend.options.clock = clock
 	timeout := time.Duration(config.RequestTimeoutMS) * time.Millisecond
 	r.service, err = r.backend.newService(serviceOptions{
+		mode:     config.Mode,
 		state:    agent.Persistence{Load: r.store.Load, Save: r.store.Save},
 		bindings: bindings, readerUID: config.ReaderUID, requestTimeout: timeout,
 	})

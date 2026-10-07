@@ -12,11 +12,13 @@ import (
 
 	"github.com/mikenorgate/router-policy-agent/internal/agent"
 	"github.com/mikenorgate/router-policy-agent/internal/binding"
+	"github.com/mikenorgate/router-policy-agent/internal/ipc"
 	"github.com/mikenorgate/router-policy-agent/internal/state"
 )
 
 func serviceOptionsFixture() serviceOptions {
 	return serviceOptions{
+		mode: agent.Enforce,
 		state: agent.Persistence{
 			Load: func(context.Context) (state.Document, error) { return state.Initial(), nil },
 			Save: func(context.Context, state.Document) error { return nil },
@@ -39,6 +41,8 @@ func TestGuardedServiceRequiresTrustedPairedDependencies(t *testing.T) {
 		name   string
 		change func(*guardedBackend, *serviceOptions)
 	}{
+		{name: "missing mode", change: func(_ *guardedBackend, o *serviceOptions) { o.mode = "" }},
+		{name: "unknown mode", change: func(_ *guardedBackend, o *serviceOptions) { o.mode = "apply" }},
 		{name: "root reader", change: func(_ *guardedBackend, o *serviceOptions) { o.readerUID = 0 }},
 		{name: "missing load", change: func(_ *guardedBackend, o *serviceOptions) { o.state.Load = nil }},
 		{name: "missing save", change: func(_ *guardedBackend, o *serviceOptions) { o.state.Save = nil }},
@@ -100,6 +104,86 @@ func TestGuardedServiceConstructionIsInert(t *testing.T) {
 	}
 	if invocations.Load() != 0 || service.hasServed.Load() {
 		t.Fatal("construction accessed runtime evidence or started serving")
+	}
+}
+
+func TestGuardedServiceShadowHasNoFirewallCallbacks(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"grants", "inactive account", "binding failure", "startup failure"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			backend, err := newGuardedBackend(backendOptionsFixture(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The fixture has no executable or usable fence. Any backend call
+			// would fail, including startup, processing failure or stop sealing.
+			document := state.Initial()
+			options := serviceOptionsFixture()
+			options.mode = agent.Shadow
+			options.state.Load = func(context.Context) (state.Document, error) {
+				if name == "startup failure" {
+					return state.Document{}, errors.New("synthetic unavailable history")
+				}
+				return state.Clone(document)
+			}
+			options.state.Save = func(_ context.Context, next state.Document) error {
+				document = next
+				return nil
+			}
+			_, _, _, input := renderFixture(t)
+			options.bindings = func(context.Context) (binding.Snapshot, error) {
+				if name == "binding failure" {
+					return binding.Snapshot{}, errors.New("synthetic unavailable bindings")
+				}
+				return input.Bindings, nil
+			}
+			service, err := backend.newService(options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			startErr := service.engine.Start(t.Context())
+			if name == "startup failure" {
+				if startErr == nil {
+					t.Fatal("shadow mode initialized or ignored missing history")
+				}
+			} else {
+				if startErr != nil {
+					t.Fatalf("shadow startup called an unusable firewall backend: %v", startErr)
+				}
+				now := time.Now().Round(0).UTC()
+				input.Directory.ObservedAt, input.Bindings.ObservedAt = now, now
+				for i := range input.Bindings.Records {
+					record := &input.Bindings.Records[i]
+					record.AssociatedAt = now
+					for j := range record.Addresses {
+						record.Addresses[j].ObservedAt = now
+						record.Addresses[j].ValidUntil = now.Add(time.Hour)
+					}
+				}
+				if name == "inactive account" {
+					input.Directory.Devices[0].Active = false
+				}
+				receipt, err := service.engine.Process(t.Context(), input.Directory)
+				switch name {
+				case "binding failure":
+					if err == nil || receipt.Status != "" {
+						t.Fatal("shadow mode accepted failed binding evidence")
+					}
+				case "inactive account":
+					if err != nil || receipt.Status != ipc.StatusShadow || receipt.GrantCount != 0 || receipt.DenialCount != 1 {
+						t.Fatalf("shadow mode ignored inactive identity: %v", err)
+					}
+				case "grants":
+					if err != nil || receipt.Status != ipc.StatusShadow || receipt.GrantCount != 1 || receipt.DenialCount != 0 {
+						t.Fatalf("shadow mode applied or rejected a valid compilation: %v", err)
+					}
+				}
+			}
+			if err := service.engine.Stop(t.Context()); err != nil {
+				t.Fatalf("shadow shutdown called an unusable firewall backend: %v", err)
+			}
+		})
 	}
 }
 

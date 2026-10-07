@@ -76,6 +76,7 @@ func TestKernelGuardedServiceAuthenticatedLifecycle(t *testing.T) {
 	bindings := make(chan binding.Snapshot, 1)
 	var bindingReads atomic.Int32
 	service, err := backend.newService(serviceOptions{
+		mode:  agent.Enforce,
 		state: agent.Persistence{Load: store.Load, Save: store.Save},
 		bindings: func(ctx context.Context) (binding.Snapshot, error) {
 			bindingReads.Add(1)
@@ -200,6 +201,7 @@ func TestKernelGuardedServiceStatusReadOnly(t *testing.T) {
 	var bindings binding.Snapshot
 	var reads atomic.Int32
 	service, err := backend.newService(serviceOptions{
+		mode:      agent.Enforce,
 		state:     agent.Persistence{Load: store.Load, Save: store.Save},
 		bindings:  func(context.Context) (binding.Snapshot, error) { reads.Add(1); return bindings, nil },
 		readerUID: 65534, requestTimeout: 10 * time.Second,
@@ -319,6 +321,7 @@ func TestKernelGuardedServiceFailedStartupRetainsClosure(t *testing.T) {
 				}
 			}
 			service, err := backend.newService(serviceOptions{
+				mode:  agent.Enforce,
 				state: agent.Persistence{Load: store.Load, Save: store.Save},
 				bindings: func(context.Context) (binding.Snapshot, error) {
 					return binding.Snapshot{}, errors.New("synthetic binding source must not run during startup")
@@ -514,13 +517,17 @@ func TestGuardedServiceReaderProcess(t *testing.T) {
 		}
 		return
 	}
-	if err != nil || receipt.Status != ipc.StatusApplied || receipt.BaselineHash != os.Getenv("RPA_SERVICE_TEST_BASELINE") {
+	expected := os.Getenv("RPA_SERVICE_TEST_EXPECT")
+	expectedStatus := ipc.StatusApplied
+	if expected == "shadow" {
+		expectedStatus = ipc.StatusShadow
+	}
+	if err != nil || receipt.Status != expectedStatus || receipt.BaselineHash != os.Getenv("RPA_SERVICE_TEST_BASELINE") {
 		t.Fatalf("synthetic service submission failed: %v", err)
 	}
-	expected := os.Getenv("RPA_SERVICE_TEST_EXPECT")
-	if expected == "applied" && (receipt.GrantCount == 0 || receipt.DenialCount != 0) ||
+	if (expected == "applied" || expected == "shadow") && (receipt.GrantCount == 0 || receipt.DenialCount != 0) ||
 		expected == "denied" && (receipt.GrantCount != 0 || receipt.DenialCount != 1) ||
-		expected != "applied" && expected != "denied" {
+		expected != "applied" && expected != "denied" && expected != "shadow" {
 		t.Fatal("synthetic service receipt did not reflect its policy decision")
 	}
 }
