@@ -55,6 +55,7 @@ func buildRecoveryCommand(ctx context.Context, t *testing.T) string {
 		ctx,
 		"/usr/local/go/bin/go",
 		"build",
+		"-buildvcs=false",
 		"-trimpath",
 		"-o",
 		binary,
