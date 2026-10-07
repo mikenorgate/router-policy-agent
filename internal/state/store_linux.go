@@ -122,7 +122,16 @@ func (s *Store) Close() error {
 	if s.root == nil {
 		return os.ErrClosed
 	}
-	err := errors.Join(s.lock.Close(), s.root.Close())
+	// A fork can transiently retain the open file description even with
+	// CLOEXEC. Explicitly unlock after joining state work, before closing.
+	fd, unlockErr := descriptor(s.lock)
+	if unlockErr == nil {
+		unlockErr = syscall.Flock(fd, syscall.LOCK_UN)
+	}
+	if unlockErr != nil {
+		unlockErr = fmt.Errorf("state: release exclusive lock: %w", unlockErr)
+	}
+	err := errors.Join(unlockErr, s.lock.Close(), s.root.Close())
 	s.lock, s.root = nil, nil
 	return err
 }
