@@ -20,7 +20,7 @@ integration:
 
 ## kernel: Qualify nftables updates and routed packet fields in an isolated disposable container
 kernel:
-	$(CONTAINER) build --file packaging/Containerfile.kernel --tag $(KERNEL_TEST_IMAGE) packaging
+	$(CONTAINER) build --file packaging/Containerfile.kernel --tag $(KERNEL_TEST_IMAGE) .
 	$(CONTAINER) run --rm --network none --cap-drop ALL --cap-add NET_ADMIN --cap-add NET_RAW \
 		--sysctl net.ipv4.ip_forward=1 --sysctl net.ipv6.conf.all.forwarding=1 \
 		--security-opt no-new-privileges \
@@ -32,7 +32,7 @@ kernel:
 
 ## kernel-service: Qualify non-root IPC, durable state and actual native firewall lifecycle
 kernel-service:
-	$(CONTAINER) build --file packaging/Containerfile.kernel --tag $(KERNEL_TEST_IMAGE) packaging
+	$(CONTAINER) build --file packaging/Containerfile.kernel --tag $(KERNEL_TEST_IMAGE) .
 	$(CONTAINER) run --rm --network none --cap-drop ALL --cap-add NET_ADMIN --cap-add NET_RAW --cap-add SETUID \
 		--sysctl net.ipv4.ip_forward=1 --sysctl net.ipv6.conf.all.forwarding=1 \
 		--security-opt no-new-privileges \

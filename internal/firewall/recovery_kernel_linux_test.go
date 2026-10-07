@@ -50,12 +50,24 @@ func buildRecoveryCommand(ctx context.Context, t *testing.T) string {
 		t.Fatal(err)
 	}
 	binary := filepath.Join(directory, "router-policy-recover")
+	// Read only the trusted runner's cache location. The child still receives
+	// an explicit environment, not arbitrary Go flags or credential variables.
+	cacheQuery := exec.CommandContext(ctx, "/usr/local/go/bin/go", "env", "GOMODCACHE")
+	cacheOutput, err := cacheQuery.Output()
+	if err != nil {
+		t.Fatalf("locate isolated Go module cache: %v", err)
+	}
+	moduleCache := strings.TrimSpace(string(cacheOutput))
+	if !filepath.IsAbs(moduleCache) || strings.ContainsAny(moduleCache, "\x00\r\n") {
+		t.Fatal("isolated Go runner returned an invalid module-cache path")
+	}
 	// #nosec G204 -- Fixed Go build target and executable in a fresh isolated fixture.
 	command := exec.CommandContext(
 		ctx,
 		"/usr/local/go/bin/go",
 		"build",
 		"-buildvcs=false",
+		"-mod=readonly",
 		"-trimpath",
 		"-o",
 		binary,
@@ -63,6 +75,8 @@ func buildRecoveryCommand(ctx context.Context, t *testing.T) string {
 	)
 	command.Env = []string{
 		"GOCACHE=" + filepath.Join(directory, "cache"), "GOMAXPROCS=4",
+		"GOMODCACHE=" + moduleCache, "GOENV=off", "GOTOOLCHAIN=local",
+		"GOPROXY=off", "GOSUMDB=off",
 		"PATH=/usr/local/go/bin:/usr/sbin:/usr/bin:/bin",
 	}
 	if output, err := command.CombinedOutput(); err != nil {

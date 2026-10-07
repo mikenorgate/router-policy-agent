@@ -1,0 +1,6 @@
+# Allow only the public build recipe and module manifests into the test image.
+**
+!go.mod
+!go.sum
+!packaging/
+!packaging/Containerfile.kernel
