@@ -6,7 +6,13 @@
 
 Router-side policy compilation for directory-managed devices. One placement group selects a reviewed VLAN role; access groups contribute exact application permissions without granting control over the router's protected policy.
 
-**Development status:** the compiler, offline checker, UID-checked local transport, durable revocation state, helper transaction engine and restricted nftables update primitives are implemented. A private guarded backend combines pinned profile inspection, the cooperative writer fence, original authorization deadlines and atomic lease replacement/sealing. A single-use service pairs that backend with the durable engine and IPC, restoring deny-only history before accepting requests and sealing on exit. Isolated kernel tests exercise native IPv4/IPv6 permits, failure revocation and expiry during continuous traffic; a separate fixture tests the service through a real non-root client. The durable revoke-before-update coordinator is also tested. This is not yet a deployable firewall agent. Installed helper activation, LDAP collection, independently qualified bindings, release/pin provenance and independently qualified protected-policy projection, actual owning-writer integration and boot restoration, protected packet-path integration and translation tests remain required. See [the implementation gates](docs/architecture.md#implementation-gates).
+**Development status:** the compiler, offline checker, UID-checked local transport, durable revocation state, helper transaction engine and restricted nftables update primitives are implemented. A private guarded backend combines pinned profile inspection, the cooperative writer fence, original authorization deadlines and atomic lease replacement/sealing. A single-use service pairs that backend with the durable engine and IPC, restoring deny-only history before accepting requests and sealing on exit. Isolated kernel tests exercise native IPv4/IPv6 permits, failure revocation and expiry during continuous traffic; a separate fixture tests the service through a real non-root client. The durable revoke-before-update coordinator is also tested. This is not yet a deployable firewall agent. Installed helper activation, directory-source integration, independently qualified bindings, release/pin provenance and independently qualified protected-policy projection, actual owning-writer integration and boot restoration, protected packet-path integration and translation tests remain required. See [the implementation gates](docs/architecture.md#implementation-gates).
+
+A read-only LDAPS library now collects original Authentik group entries and
+direct device memberships with verified certificates, bounded paging and
+redacted failures. Loopback wire tests exercise TLS rejection, partial-result
+rejection, cancellation and credential rotation. It is not yet connected to a
+production reader service. See [directory collection and qualification](docs/directory-and-radius.md).
 
 Configured helper wiring now rejects kernel-reported unsafe synchronization
 through a read-only Linux clock query. Request-triggered clock-loss revocation
@@ -92,7 +98,14 @@ Only Untrusted access groups are supported. Authentik cannot grant either direct
 
 Recognized NAT64/NAT46 addresses resolve to the real host before protection checks. The compiler includes installed, eligible NAT64 encodings and ready approved NAT46 counterparts. Private targets never gain a well-known-prefix encoding. Reserved unready/unmapped aliases deny, and a changed alias cannot transfer an unchanged rule's permission to another host. Expansion does not create a map, route, listener or DNS record. A compiled representation alone is not proof that its translated packet path can be enforced.
 
-Bindings require an actual NAS association and independently qualified DHCP/IPv6 ownership. Access-Accept and NDP alone are insufficient. The example binding record is a fixture, not evidence that a real collector exists. Directory and binding freshness limit permissions to 90 seconds or less; map events cannot renew directory leases. The privileged runtime must enforce those deadlines in the kernel before stateful/translator fast paths.
+The agent's network-evidence interface is RADIUS, not an AP/controller API.
+Bindings require a current actual NAS association and independently qualified
+address ownership delivered through that interface. Access-Accept and NDP alone
+are insufficient. The example binding record is a fixture, not evidence that a
+real collector exists. Directory and binding freshness limit permissions to 90
+seconds or less; map events cannot renew directory leases. The privileged
+runtime must enforce those deadlines in the kernel before stateful/translator
+fast paths. See [RADIUS source requirements](docs/directory-and-radius.md#radius-only-network-evidence).
 
 See [architecture and remaining gates](docs/architecture.md) and [security responsibilities](SECURITY.md). Network-specific endpoints, protected catalogs, accounts, credentials and operational evidence belong in private deployment configuration, not this repository.
 
