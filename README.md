@@ -8,11 +8,15 @@ Router-side policy compilation for directory-managed devices. One placement grou
 
 **Development status:** the compiler, offline checker, UID-checked local transport, durable revocation state, helper transaction engine and restricted nftables update primitives are implemented. A private guarded backend combines pinned profile inspection, the cooperative writer fence, original authorization deadlines and atomic lease replacement/sealing. A single-use service pairs that backend with the durable engine and IPC, restoring deny-only history before accepting requests and sealing on exit. Isolated kernel tests exercise native IPv4/IPv6 permits, failure revocation and expiry during continuous traffic; a separate fixture tests the service through a real non-root client. The durable revoke-before-update coordinator is also tested. This is not yet a deployable firewall agent. Installed helper activation, directory-source integration, independently qualified bindings, release/pin provenance and independently qualified protected-policy projection, actual owning-writer integration and boot restoration, protected packet-path integration and translation tests remain required. See [the implementation gates](docs/architecture.md#implementation-gates).
 
-A read-only LDAPS library now collects original Authentik group entries and
+A read-only LDAPS collector obtains original Authentik group entries and
 direct device memberships with verified certificates, bounded paging and
 redacted failures. Loopback wire tests exercise TLS rejection, partial-result
-rejection, cancellation and credential rotation. It is not yet connected to a
-production reader service. See [directory collection and qualification](docs/directory-and-radius.md).
+rejection, cancellation and credential rotation. The Linux `router-policy-reader`
+command now connects fresh collection to the checked root-helper socket, with a
+serial 30-second poll and one ten-second collection/submission budget. Isolated
+cross-UID tests exercise the configured command. Production source qualification,
+helper activation and installed service packaging remain outstanding. See
+[directory collection and reader configuration](docs/directory-and-radius.md).
 
 Configured helper wiring now rejects kernel-reported unsafe synchronization
 through a read-only Linux clock query. Request-triggered clock-loss revocation
@@ -34,6 +38,14 @@ make build
 ```
 
 The synthetic example produces one TCP/6053 permission from a Trusted controller to an Untrusted device. The `-at` option is for offline fixtures only; it does not authorize changing a production clock. The checker prints JSON to stdout, diagnostics to stderr, and never changes networking or router state. Exit codes are 0 for a completed compilation (including device denials), 1 for an invalid snapshot/runtime failure, and 2 for incorrect arguments.
+
+`router-policy-reader` is a Linux-only, non-root long-running command. It needs
+`-config-directory` naming its private reader-owned runtime configuration and
+credentials. It connects only over verified LDAPS and submits fresh snapshots
+to a separately installed root helper; it cannot select enforcement mode, supply
+bindings or modify the protected baseline. Runtime diagnostics are fixed JSON
+outcomes on stderr, without directory dumps or upstream errors. It does not
+install or start a helper. See [the reader command contract](docs/directory-and-radius.md#reader-command).
 
 `router-policy-status` is a Linux-only, read-only client for a separately
 authorized helper socket. `-socket` is required; `-server-uid` defaults to root

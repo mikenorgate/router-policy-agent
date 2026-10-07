@@ -57,7 +57,7 @@ jobs:
       - name: Qualify actual unprivileged peer and durable state
         run: |
           test "$(id -u)" = 0
-          go test -race -shuffle=on -count=1 -tags integration ./internal/ipc ./internal/hostfs ./internal/state ./internal/firewall
+          go test -race -shuffle=on -count=1 -tags integration ./internal/ipc ./internal/hostfs ./internal/state ./internal/firewall ./internal/reader ./internal/cli
   kernel:
     name: Isolated nftables transactions
     runs-on: ubuntu-latest

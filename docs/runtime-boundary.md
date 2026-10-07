@@ -1,7 +1,8 @@
 # Local transport and durable state
 
-These packages implement the helper boundary, not a working firewall service.
-No current command starts the transport or updates nftables. The private guarded
+These packages implement the helper boundary, not an installed firewall service.
+The reader command submits fresh directory data to a checked root-helper socket;
+no current command starts the helper or directly updates nftables. The private guarded
 backend is exercised in isolated test fixtures, not an installed service. The
 remaining runtime and packet tests are listed in [the activation gates](architecture.md#implementation-gates).
 

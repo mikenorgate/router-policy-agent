@@ -7,9 +7,10 @@ floor, and a directory read cannot establish network ownership.
 
 ## Directory collection
 
-`internal/directory` provides a read-only library, not an installed service or
-command. `New` accepts private connection configuration and a cancellable
-credential callback. `Collect` opens a new connection and obtains credentials
+`internal/directory` provides the read-only collector used by the Linux reader
+command. It does not install a service. `New` accepts private connection
+configuration and a cancellable credential callback. `Collect` opens a new
+connection and obtains credentials
 again on each call; it caches neither credentials nor directory entries.
 Concurrent calls use separate connections. A shared credential callback must
 itself be safe for concurrent use and honor its context.
@@ -90,6 +91,84 @@ authority or freshness. Before connecting this library to enforcement:
 
 Provider configuration, credentials, CA material and these operational records
 remain private. This library does not change provider settings or permissions.
+
+## Reader command
+
+Build `cmd/router-policy-reader` with `make build`, then run it under the
+separately provisioned non-root reader identity:
+
+```sh
+router-policy-reader -config-directory /run/router-policy-agent-reader
+```
+
+This command requires a separately installed helper. It does not create a socket,
+start a helper, reset state or install firewall rules. The helper, not the reader,
+selects shadow/enforce mode and obtains bindings and protected configuration.
+Deployment and source qualification are still required before enabling grants.
+
+The private directory must belong to the reader UID, have no group/other access,
+and have trusted non-writable ancestors. The process refuses root or differing
+real/effective UIDs. Files must be single-link regular files owned by the same
+reader UID with mode `0400` or `0600`; symlinks, special files and executable or
+shared-readable files are rejected. A deployment supervisor must provision this
+directory rather than granting the process access to privileged configuration.
+
+`reader.json` accepts exactly these required fields:
+
+| Field | Meaning |
+| --- | --- |
+| `schema_version` | Must be `1`. |
+| `directory_url` | Explicit verified `ldaps://host:port`, with no credentials, path, query or fallback. |
+| `base_dn` | The separately authorized provider namespace. |
+| `helper_socket` | Clean absolute request-socket path, at most 107 bytes. Its filesystem ownership and root peer UID are checked before sending. |
+| `custom_ca` | If true, use only the checked `ca.pem` in this directory; otherwise use system roots. |
+
+The file is capped at 16 KiB. Unknown, duplicate, case-variant, missing and null
+fields reject startup. There are no environment overrides or command-line secret,
+binding, time, mode or protection switches. `ca.pem` is capped at 64 KiB and 32
+certificate authorities; non-certificate content rejects rather than being
+silently ignored. Configuration and CA trust are loaded once; restart the reader
+after an approved change. The directory descriptor stays pinned for its lifetime.
+
+The supervisor supplies `credentials.json` with exactly `bind_dn` and `password`
+string fields, capped at 8 KiB. The reader reopens this fixed file for each
+collection. Rotate it by replacing the file atomically inside the pinned
+directory, not by replacing the directory or introducing a symlink. Project
+secrets from the platform's credential mechanism or protected encrypted private
+storage; never commit them or bake them into an image. Clearing the input byte
+buffer is not a guarantee that the Go/LDAP runtime erases all secret copies.
+
+The first poll starts immediately. Subsequent polls target 30 seconds from the
+previous attempt's start, without overlap or catch-up bursts. Collection and
+submission share one ten-second deadline. Search caps remain 256 entries per
+page, 4,096 accounts and 8,192 groups. The helper independently rechecks the
+snapshot, original observation age, authoritative bindings and protected floor.
+The reader never caches a snapshot, resets its observation time, retries a lost
+receipt or submits a partial collection. A failed poll grants nothing new; old
+permits expire under the helper's independently enforced lease.
+
+Runtime stdout is unused. Stderr receives one JSON outcome per completed
+attempt: `collection_failed`, `submission_failed`, `rejected`, `shadow` or
+`applied`, with bounded grant/denial counts. Shadow is not application access;
+applied is a transaction receipt, not independent protected-floor acceptance.
+No identities, addresses, policies, credentials or raw backend errors enter these
+diagnostics. A diagnostic-write failure stops the reader. SIGINT/SIGTERM cancel
+and join in-flight collection/submission. Exit 0 means help/version or orderly
+cancellation, 1 means startup/runtime failure, and 2 means invalid arguments.
+
+Tests cover bounded file parsing, atomic credential rotation, shared deadlines,
+failed-read/lost-receipt recovery, fixed diagnostics and cancellation. An isolated
+root test runner also launches the configured command as UID 65534 against an
+in-memory synthetic TLS directory and a root-owned UID-checked helper socket.
+That fixture verifies original group/inactive identity delivery, TLS rejection
+before submission and helper rejection without leaking errors. It does not
+qualify a production directory, a binding producer or the final firewall path.
+
+The reader protects two boundaries: credential-bearing directory transport and
+directory data crossing to the root helper. Verified TLS, checked private files,
+fresh single-use submissions and kernel peer identity checks address substitution,
+replay and diagnostic disclosure. Directory authority and privileged-helper
+enforcement remain separate qualification gates; this command cannot prove them.
 
 ## RADIUS-only network evidence
 

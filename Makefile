@@ -54,6 +54,7 @@ fmt:
 fuzz:
 	$(GO) test ./internal/strictjson -run '^$$' -fuzz FuzzDecode -fuzztime 10s
 	$(GO) test ./internal/directory -run '^$$' -fuzz '^FuzzFrameReader$$' -fuzztime 10s
+	$(GO) test ./internal/reader -run '^$$' -fuzz '^FuzzReaderConfig$$' -fuzztime 10s
 	$(GO) test ./internal/policy -run '^$$' -fuzz FuzzParseGroup -fuzztime 10s
 	$(GO) test ./internal/policy -run '^$$' -fuzz FuzzResolve -fuzztime 10s
 	$(GO) test ./internal/state -run '^$$' -fuzz FuzzDecode -fuzztime 10s
