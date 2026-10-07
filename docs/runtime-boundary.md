@@ -720,6 +720,52 @@ These fixtures do not qualify real bindings, release/pin provenance, encrypted
 storage, boot ordering, synchronized time or translated forwarding. No installed
 helper executable or production configuration is supplied yet.
 
+## Denial-only recovery
+
+`router-policy-recover -config-directory PATH` performs one fixed root-only
+operation: seal all existing agent-owned application lease mirrors and restore
+validated deny-only classification. Build it with `make build`; there is no
+installed configuration or guard layout supplied for a real router yet.
+
+Stop the owning helper through the deployment's approved service procedure
+before recovery. The command acquires the same exclusive state lock and refuses
+an existing owner. It never stops a service, adopts/unlinks sockets, reads LDAP
+or bindings, refreshes grants, changes routes/maps, or flushes conntrack. Its
+scope is all helper-owned application grants, not a per-device rollback or
+restoration of legacy permits.
+
+Recovery uses the checked profile, ELF descriptor and shared writer fence.
+It revokes current leases before loading history, then restores saved MAC and
+both-family address classifiers without granting access. Existing kernel
+classifiers are retained in the union. The durable file, temporary deadlines,
+alias anchors and observation watermarks are not written. Neither a ready
+generation record nor a usable clock is required to revoke; drift in external
+tables is left untouched. This is not repair or verification of that floor.
+
+Missing or corrupt history makes recovery fail even if existing leases were
+successfully sealed. It is never initialized, overwritten or reconstructed.
+Missing/damaged guard schemas, an unavailable state lock/fence or failed nftables
+inspection also return failure; immediate sealing cannot be assumed. Keep
+enforcement stopped and use the separately reviewed recovery procedure. The
+command cannot repair unsafe/missing resources, restore lost history, authorize
+a canary rollback or qualify signed A/B image recovery.
+
+`-timeout` defaults to five seconds and accepts durations greater than zero and
+at most ten seconds. Cancellation/failure after resources open triggers a
+separate two-second sealing attempt, followed by separately bounded resource
+closure. JSON goes to stdout only on verified owned sealing with valid history;
+`floor_state` remains `unverified`. Exit codes are 0 for that scoped result, 1
+for unsuccessful/unverified recovery or output failure, and 2 for invalid
+arguments. Fixed stderr messages exclude private paths and upstream diagnostics.
+
+The isolated test builds and invokes the real CLI, denies an unprivileged
+caller, refuses a live store owner and respects a deliberately stalled writer
+fence. Native IPv4/IPv6 initiation and correlated replies stop after recovery;
+an unrelated established flow still passes. Tests retain exact durable bytes,
+restore recorded classifiers, seal despite floor/generation drift, leave broken
+history intact and reject guard-schema drift without claiming recovery. They
+do not qualify production boot, translation or release provenance.
+
 ## Linux synchronization check
 
 The configured entry point fixes its clock source to a fresh Linux `adjtimex`

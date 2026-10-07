@@ -80,6 +80,15 @@ sealing and request-triggered revocation on clock loss. This does not qualify
 the time reference, accuracy, suspend/resume or boot ordering. See the
 [clock check and its limits](runtime-boundary.md#linux-synchronization-check).
 
+The root-only recovery command now seals only existing helper-owned application
+grants under the shared fence and exclusive state lock. It retains kernel
+classifiers, restores validated saved history and never rewrites durable state.
+Missing/corrupt history remains an error even after successful revocation.
+Isolated tests invoke the actual CLI and exercise native packet cutoff without
+changing the external baseline or an unrelated established flow. This is
+denial-only recovery, not production rollback, guard repair or authorization to
+restart enforcement. See [the recovery contract](runtime-boundary.md#denial-only-recovery).
+
 The following gates remain before this project can be called a completed runtime:
 
 1. Add verified LDAPS/StartTLS collection with individual group reads, exact active identity, complete bounded paging and collision-safe membership interpretation. There must be no plaintext production fallback.

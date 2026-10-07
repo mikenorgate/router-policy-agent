@@ -103,6 +103,7 @@ func configuredListenerMatches(listener *net.UnixListener, path string) bool {
 type configuredResources struct {
 	service  *guardedService
 	operator *ipc.Server
+	backend  *guardedBackend
 	store    *state.Store
 	executor *process
 	gate     *generationGate
@@ -131,7 +132,49 @@ func openConfiguredWithClock(
 	clock func() time.Time,
 ) (resources *configuredResources, result error) {
 	validDependencies := ctx != nil && bindings != nil && clock != nil
-	if !validDependencies || os.Geteuid() != 0 {
+	if !validDependencies {
+		return nil, errors.New("firewall: invalid configured resource owner or inputs")
+	}
+	r, err := openConfiguredOwner(ctx, config)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if result != nil {
+			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+			defer cancel()
+			result = errors.Join(result, r.close(cleanup))
+		}
+	}()
+	// Only this trusted executable-side assembler may choose a test clock.
+	// The recovery command never samples time or constructs a reader engine.
+	r.backend.options.clock = clock
+	timeout := time.Duration(config.RequestTimeoutMS) * time.Millisecond
+	r.service, err = r.backend.newService(serviceOptions{
+		state:    agent.Persistence{Load: r.store.Load, Save: r.store.Save},
+		bindings: bindings, readerUID: config.ReaderUID, requestTimeout: timeout,
+	})
+	if err != nil {
+		return nil, err
+	}
+	r.operator, err = r.service.newStatusServer(config.OperatorUID, timeout)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+// openConfiguredOwner holds the same checked enforcement resources for live
+// service wiring and denial-only recovery. It does not need a binding producer,
+// sample a clock, execute nftables, initialize state or adopt any listener.
+func openConfiguredOwner(
+	ctx context.Context,
+	config helperConfig,
+) (resources *configuredResources, result error) {
+	if ctx == nil || os.Geteuid() != 0 {
 		return nil, errors.New("firewall: invalid configured resource owner or inputs")
 	}
 	if err := config.validate(); err != nil {
@@ -163,22 +206,10 @@ func openConfiguredWithClock(
 	if err != nil {
 		return nil, profileFailure("helper persistent store unavailable", err)
 	}
-	backend, err := newGuardedBackend(backendOptions{
+	r.backend, err = newGuardedBackend(backendOptions{
 		profile: profile, executor: r.executor, generation: r.gate,
-		expected: config.ExpectedGeneration, clock: clock,
+		expected: config.ExpectedGeneration, clock: kernelUTC,
 	})
-	if err != nil {
-		return nil, err
-	}
-	timeout := time.Duration(config.RequestTimeoutMS) * time.Millisecond
-	r.service, err = backend.newService(serviceOptions{
-		state:    agent.Persistence{Load: r.store.Load, Save: r.store.Save},
-		bindings: bindings, readerUID: config.ReaderUID, requestTimeout: timeout,
-	})
-	if err != nil {
-		return nil, err
-	}
-	r.operator, err = r.service.newStatusServer(config.OperatorUID, timeout)
 	if err != nil {
 		return nil, err
 	}

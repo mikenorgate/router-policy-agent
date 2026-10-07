@@ -44,6 +44,14 @@ not that its protected-policy semantics or translated paths are qualified.
 JSON goes to stdout and fixed diagnostics to stderr. Exit 0 means a valid report,
 including unhealthy/unverified state; it is not a firewall health verdict.
 
+`router-policy-recover` is a Linux-only, root-only command that revokes existing
+agent-owned application grants. Stop the owning helper separately first; its
+exclusive state lock prevents recovery from racing it. `-config-directory` is
+required and loads the same checked private `helper.json`; `-timeout` defaults
+to five seconds and is capped at ten. State is never initialized or reset.
+Exit 0 confirms owned sealing and retained history, not baseline health or
+permission to restart enforcement. See [recovery scope and failures](docs/runtime-boundary.md#denial-only-recovery).
+
 Private helper wiring now loads checked root-owned configuration and supervises
 the separate reader/operator listeners. Both start after closed restoration and
 stop before backend resources are released. No installed helper or real binding
