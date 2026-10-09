@@ -1,5 +1,8 @@
 # Router Policy Agent
 
+The [collector-only shadow prerelease](docs/collector-release.md) packages a
+root-private RADIUS/DHCP observer. It does not install or enable firewall enforcement.
+
 [![Go version](https://img.shields.io/github/go-mod/go-version/mikenorgate/router-policy-agent)](https://go.dev/)
 [![License](https://img.shields.io/github/license/mikenorgate/router-policy-agent)](LICENSE)
 [![Checks](https://github.com/mikenorgate/router-policy-agent/actions/workflows/check.yml/badge.svg)](https://github.com/mikenorgate/router-policy-agent/actions/workflows/check.yml)
