@@ -128,6 +128,10 @@ seconds or less; map events cannot renew directory leases. The privileged
 runtime must enforce those deadlines in the kernel before stateful/translator
 fast paths. See [RADIUS source requirements](docs/directory-and-radius.md#radius-only-network-evidence).
 
+The [inert helper package](docs/helper-release.md) adds no installed service or
+site configuration. Its explicit shadow source can read collector proposals
+without publishing authoritative bindings; enforcement rejects that source.
+
 See [architecture and remaining gates](docs/architecture.md) and [security responsibilities](SECURITY.md). Network-specific endpoints, protected catalogs, accounts, credentials and operational evidence belong in private deployment configuration, not this repository.
 
 ## Contributing

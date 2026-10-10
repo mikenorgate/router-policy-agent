@@ -23,6 +23,7 @@ class CollectorPackageTests(unittest.TestCase):
         self.go = 'go1.26.9'
         self.scan = 'No vulnerabilities found.\n'
         self.builds = 0
+        self.command = 'router-policy-collector'
 
     def run_command(self, *arguments, env=None):
         if arguments == ('git', 'status', '--porcelain'):
@@ -43,7 +44,7 @@ class CollectorPackageTests(unittest.TestCase):
             self.assertEqual(env['GOTOOLCHAIN'], 'local')
             Path(arguments[arguments.index('-o') + 1]).write_bytes(b'test collector binary')
             return ''
-        if arguments == (str(self.output / 'router-policy-collector'), '-version'):
+        if arguments == (str(self.output / self.command), '-version'):
             return '0.1.0-shadow.1\n'
         if arguments[0] == 'govulncheck':
             return self.scan
@@ -53,7 +54,8 @@ class CollectorPackageTests(unittest.TestCase):
 
     def build(self):
         with patch.object(BUILDER, 'run', self.run_command), patch('sys.argv', [
-                'build-collector.py', '--version', '0.1.0-shadow.1', '--output', str(self.output)]):
+                'build-collector.py', '--version', '0.1.0-shadow.1', '--output', str(self.output),
+                '--command', self.command]):
             BUILDER.main()
 
     def test_package_is_inert_and_root_owned(self):
@@ -74,6 +76,32 @@ class CollectorPackageTests(unittest.TestCase):
 
     def test_dirty_source_is_rejected_before_build(self):
         self.dirty = '?? unfinished-helper.go\n'
+        with self.assertRaises(SystemExit):
+            self.build()
+        self.assertEqual(self.builds, 0)
+
+    def test_helper_package_contains_only_executable_and_license(self):
+        self.command = 'router-policy-helper'
+        self.build()
+        manifest = json.loads((self.output / 'helper-release.json').read_text())
+        package = self.output / manifest['package_filename']
+        self.assertEqual(manifest['command'], self.command)
+        self.assertEqual(manifest['mode'], 'explicit_configuration')
+        self.assertTrue((self.output / 'helper-security.txt').is_file())
+        self.assertFalse((self.output / 'collector-release.json').exists())
+        with tempfile.TemporaryDirectory() as extracted:
+            root = Path(extracted)
+            subprocess.run(['dpkg-deb', '--extract', str(package), extracted], check=True)
+            self.assertEqual(sorted(str(path.relative_to(root)) for path in root.rglob('*') if path.is_file()),
+                             ['usr/bin/router-policy-helper', 'usr/share/doc/router-policy-helper/copyright'])
+            self.assertEqual((root / 'usr/bin/router-policy-helper').stat().st_mode & 0o7777, 0o755)
+        with tempfile.TemporaryDirectory() as controls:
+            subprocess.run(['dpkg-deb', '--control', str(package), controls], check=True)
+            self.assertEqual([path.name for path in Path(controls).iterdir()], ['control'])
+        self.assertEqual(BUILDER.digest(package), manifest['package_sha256'])
+
+    def test_arbitrary_commands_are_rejected(self):
+        self.command = '../../unexpected-command'
         with self.assertRaises(SystemExit):
             self.build()
         self.assertEqual(self.builds, 0)

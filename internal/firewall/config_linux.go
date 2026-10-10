@@ -17,6 +17,7 @@ import (
 
 const helperConfigFile = "helper.json"
 const maximumHelperConfig = 16 << 10
+const radiusShadowSource = "radius_shadow"
 
 // helperConfig belongs to the privileged integration, never reader IPC. The
 // profile pin and expected vector must come from its independently verified
@@ -25,6 +26,7 @@ const maximumHelperConfig = 16 << 10
 type helperConfig struct {
 	SchemaVersion      int              `json:"schema_version"`
 	Mode               agent.Mode       `json:"mode"`
+	BindingSource      string           `json:"binding_source,omitempty"`
 	Profile            helperProfile    `json:"profile"`
 	GenerationDir      string           `json:"generation_directory"`
 	StateDir           string           `json:"state_directory"`
@@ -53,7 +55,7 @@ func decodeHelperConfig(ctx context.Context, data []byte) (helperConfig, error) 
 		"schema_version", "mode", "profile", "generation_directory", "state_directory", "nft_executable",
 		"reader_uid", "operator_uid", "request_timeout_ms", "request_socket", "status_socket", "expected_generation",
 	}
-	if err := strictjson.Object(data, keys, nil, maximumHelperConfig); err != nil {
+	if err := strictjson.Object(data, keys, []string{"binding_source"}, maximumHelperConfig); err != nil {
 		return helperConfig{}, profileFailure("helper configuration structure invalid", err)
 	}
 	object := map[string]json.RawMessage{}
@@ -82,6 +84,9 @@ func decodeHelperConfig(ctx context.Context, data []byte) (helperConfig, error) 
 func (c helperConfig) validate() error {
 	if c.Mode != agent.Shadow && c.Mode != agent.Enforce {
 		return errors.New("firewall: helper requires an explicit valid mode")
+	}
+	if c.BindingSource != "" && (c.BindingSource != radiusShadowSource || c.Mode != agent.Shadow) {
+		return errors.New("firewall: collector proposals require shadow-only mode")
 	}
 	validIDs := c.ReaderUID != 0 && c.OperatorUID != 0 && c.ReaderUID != c.OperatorUID
 	validTimeout := c.RequestTimeoutMS > 0 && c.RequestTimeoutMS <= 10_000
