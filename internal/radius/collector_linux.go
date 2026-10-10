@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mikenorgate/router-policy-agent/internal/binding"
 	"github.com/mikenorgate/router-policy-agent/internal/kea"
 )
 
@@ -23,22 +24,28 @@ type CollectorOptions struct {
 	VLAN           uint16
 	MaximumDevices int
 	Timeout        time.Duration
+	Placement      *PlacementOptions
 }
 
 // Collection contains shadow consistency results only. It is not an ownership
 // qualification, directory authorization, binding snapshot or atomic transaction
 // across RADIUS and DHCP. Original evidence times bound every candidate.
+// Optional ProposedBindings are shadow-only records, not an accepted helper feed.
 type Collection struct {
-	ObservedAt time.Time       `json:"observed_at"`
-	Generation string          `json:"generation"`
-	Candidates []IPv4Candidate `json:"candidates"`
-	Withheld   int             `json:"withheld"`
+	ObservedAt        time.Time        `json:"observed_at"`
+	Generation        string           `json:"generation"`
+	Candidates        []IPv4Candidate  `json:"candidates"`
+	Withheld          int              `json:"withheld"`
+	PlacementChecked  bool             `json:"placement_checked,omitempty"`
+	PlacementWithheld int              `json:"placement_withheld,omitempty"`
+	ProposedBindings  []binding.Record `json:"proposed_bindings,omitempty"`
 }
 
 type collectionSources struct {
-	history func(context.Context) (history, error)
-	lease   func(context.Context, string) (kea.Observation, error)
-	now     func() time.Time
+	history   func(context.Context) (history, error)
+	lease     func(context.Context, string) (kea.Observation, error)
+	now       func() time.Time
+	placement func(context.Context) (placementObservation, error)
 }
 
 // CollectIPv4 brackets two authoritative lease passes with three authenticated
@@ -48,6 +55,7 @@ type collectionSources struct {
 // reassignment, clock/source failure or quota
 // breach returns no collection. Later changes remain possible: this detects
 // observed races, not a cross-daemon lock. No firewall operation is performed.
+// Optional host-placement reads bracket the lease recheck; both must agree.
 func CollectIPv4(ctx context.Context, options CollectorOptions) (Collection, error) {
 	if ctx == nil || os.Geteuid() != 0 || !validCollectorOptions(options) {
 		return Collection{}, errors.New("radius: invalid privileged collector options")
@@ -55,6 +63,10 @@ func CollectIPv4(ctx context.Context, options CollectorOptions) (Collection, err
 	// Configuration remains owned by this operation even if the caller later
 	// replaces its prefix slice. Concurrent mutation by a caller is not supported.
 	options.Journal.NASPrefixes = slices.Clone(options.Journal.NASPrefixes)
+	if options.Placement != nil {
+		placement := *options.Placement
+		options.Placement = &placement
+	}
 	ctx, cancel := context.WithTimeout(ctx, options.Timeout)
 	defer cancel()
 	return collectIPv4(ctx, options, collectionSources{
@@ -63,6 +75,9 @@ func CollectIPv4(ctx context.Context, options CollectorOptions) (Collection, err
 			return kea.ReadIPv4(ctx, options.Kea, mac)
 		},
 		now: time.Now,
+		placement: func(ctx context.Context) (placementObservation, error) {
+			return capturePlacement(ctx, *options.Placement)
+		},
 	})
 }
 
@@ -76,12 +91,16 @@ func validCollectorOptions(options CollectorOptions) bool {
 	validSocket := filepath.IsAbs(options.Kea.Socket) && filepath.Clean(options.Kea.Socket) == options.Kea.Socket &&
 		len(options.Kea.Socket) <= 107 && !strings.ContainsRune(options.Kea.Socket, '\x00')
 	scope := Scope{BootID: strings.Repeat("0", 32), NASPrefixes: options.Journal.NASPrefixes}
-	return validBudget && validJournal && validQuota && validVLAN && validKea && validPrefix && validSocket && validScope(scope)
+	validPlacement := options.Placement == nil || validPlacementOptions(*options.Placement) && options.Placement.VLAN == options.VLAN
+	return validBudget && validJournal && validQuota && validVLAN && validKea && validPrefix && validSocket && validScope(scope) && validPlacement
 }
 
 func collectIPv4(ctx context.Context, options CollectorOptions, sources collectionSources) (Collection, error) {
 	if ctx == nil || sources.history == nil || sources.lease == nil || sources.now == nil {
 		return Collection{}, errors.New("radius: missing collector dependency")
+	}
+	if options.Placement != nil && (sources.placement == nil || !validPlacementOptions(*options.Placement) || options.Placement.VLAN != options.VLAN) {
+		return Collection{}, errors.New("radius: missing or invalid placement dependency")
 	}
 	if err := ctx.Err(); err != nil {
 		return Collection{}, err
@@ -107,6 +126,13 @@ func collectIPv4(ctx context.Context, options CollectorOptions, sources collecti
 		}
 		leases = append(leases, lease)
 	}
+	var firstPlacement placementObservation
+	if options.Placement != nil {
+		firstPlacement, err = sources.placement(ctx)
+		if err != nil {
+			return Collection{}, errors.Join(errors.New("radius: placement source unavailable"), ctx.Err())
+		}
+	}
 	second, err := sources.history(ctx)
 	if err != nil || !steadyHistory(first, second, observation) {
 		return Collection{}, errors.Join(errors.New("radius: accounting changed during lease collection"), ctx.Err())
@@ -122,6 +148,13 @@ func collectIPv4(ctx context.Context, options CollectorOptions, sources collecti
 			return Collection{}, errors.New("radius: lease changed during collection")
 		}
 	}
+	var lastPlacement placementObservation
+	if options.Placement != nil {
+		lastPlacement, err = sources.placement(ctx)
+		if err != nil || lastPlacement.identity != firstPlacement.identity || lastPlacement.observedAt.Before(firstPlacement.observedAt) {
+			return Collection{}, errors.Join(errors.New("radius: placement source changed or unavailable"), ctx.Err())
+		}
+	}
 	last, err := sources.history(ctx)
 	if err != nil || !steadyHistory(second, last, observation) {
 		return Collection{}, errors.Join(errors.New("radius: accounting changed during lease recheck"), ctx.Err())
@@ -135,6 +168,9 @@ func collectIPv4(ctx context.Context, options CollectorOptions, sources collecti
 		return Collection{}, errors.New("radius: collector clock conflict")
 	}
 	result := Collection{ObservedAt: now.UTC(), Candidates: []IPv4Candidate{}, Withheld: observation.Withheld}
+	if options.Placement != nil {
+		result.PlacementChecked, result.ProposedBindings = true, []binding.Record{}
+	}
 	identities := []string{last.scope.BootID, digest(string(last.data))}
 	owners := make(map[netip.Addr]bool)
 	for index, session := range observation.Sessions {
@@ -145,6 +181,19 @@ func collectIPv4(ctx context.Context, options CollectorOptions, sources collecti
 		owners[candidate.IP] = true
 		result.Candidates = append(result.Candidates, candidate)
 		identities = append(identities, candidate.Session.AssociationID, candidate.OwnershipID)
+		if options.Placement != nil {
+			first, firstErr := bindPlacement(candidate, firstPlacement, scope, options.Placement.Interface, result.ObservedAt)
+			last, lastErr := bindPlacement(candidate, lastPlacement, scope, options.Placement.Interface, result.ObservedAt)
+			if firstErr != nil || lastErr != nil {
+				result.PlacementWithheld++
+				continue
+			}
+			if last.Addresses[0].ValidUntil.Before(first.Addresses[0].ValidUntil) {
+				first.Addresses[0].ValidUntil = last.Addresses[0].ValidUntil
+			}
+			result.ProposedBindings = append(result.ProposedBindings, first)
+			identities = append(identities, first.Addresses[0].OwnershipID, first.Addresses[0].ValidUntil.UTC().Format(time.RFC3339Nano))
+		}
 	}
 	result.Generation = digest(identities...)
 	return result, nil

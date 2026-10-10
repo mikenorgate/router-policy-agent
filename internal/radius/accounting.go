@@ -1,6 +1,6 @@
 // Package radius correlates authenticated accounting history without granting
-// firewall authority. Its observations lack independent VLAN placement and
-// packet-source ownership evidence and are not binding snapshots.
+// firewall authority. Accounting alone lacks actual VLAN/source ownership;
+// optional host-placement checks still produce only shadow binding proposals.
 package radius
 
 import (

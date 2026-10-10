@@ -2,6 +2,7 @@ package radius
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/netip"
@@ -23,17 +24,23 @@ const maximumRuntimeConfig = 16 << 10
 var errRuntime = errors.New("radius: shadow runtime unavailable")
 
 type runtimeConfig struct {
-	SchemaVersion   int      `json:"schema_version"`
-	Mode            string   `json:"mode"`
-	RadiusUser      string   `json:"radius_user"`
-	NASPrefixes     []string `json:"nas_prefixes"`
-	KeaUser         string   `json:"kea_user"`
-	KeaSocket       string   `json:"kea_socket"`
-	SubnetID        uint32   `json:"subnet_id"`
-	IPv4Prefix      string   `json:"ipv4_prefix"`
-	VLAN            uint16   `json:"vlan"`
-	MaximumDevices  int      `json:"maximum_devices"`
-	OutputDirectory string   `json:"output_directory"`
+	SchemaVersion   int               `json:"schema_version"`
+	Mode            string            `json:"mode"`
+	RadiusUser      string            `json:"radius_user"`
+	NASPrefixes     []string          `json:"nas_prefixes"`
+	KeaUser         string            `json:"kea_user"`
+	KeaSocket       string            `json:"kea_socket"`
+	SubnetID        uint32            `json:"subnet_id"`
+	IPv4Prefix      string            `json:"ipv4_prefix"`
+	VLAN            uint16            `json:"vlan"`
+	MaximumDevices  int               `json:"maximum_devices"`
+	OutputDirectory string            `json:"output_directory"`
+	HostPlacement   *runtimePlacement `json:"host_placement,omitempty"`
+}
+
+type runtimePlacement struct {
+	Interface string `json:"interface"`
+	Parent    string `json:"parent"`
 }
 
 // RunShadow performs one root-only, bounded collection from collector.json in
@@ -95,12 +102,21 @@ func runShadow(
 func decodeRuntimeConfig(data []byte) (runtimeConfig, error) {
 	keys := []string{"schema_version", "mode", "radius_user", "nas_prefixes", "kea_user", "kea_socket",
 		"subnet_id", "ipv4_prefix", "vlan", "maximum_devices", "output_directory"}
-	if err := strictjson.Object(data, keys, nil, maximumRuntimeConfig); err != nil {
+	if err := strictjson.Object(data, keys, []string{"host_placement"}, maximumRuntimeConfig); err != nil {
 		return runtimeConfig{}, errRuntime
 	}
 	var configuration runtimeConfig
 	if err := strictjson.Decode(data, &configuration, maximumRuntimeConfig); err != nil {
 		return runtimeConfig{}, errRuntime
+	}
+	if configuration.HostPlacement != nil {
+		values := map[string]json.RawMessage{}
+		if err := strictjson.Decode(data, &values, maximumRuntimeConfig); err != nil {
+			return runtimeConfig{}, errRuntime
+		}
+		if err := strictjson.Object(values["host_placement"], []string{"interface", "parent"}, nil, maximumRuntimeConfig); err != nil {
+			return runtimeConfig{}, errRuntime
+		}
 	}
 	isSchema := configuration.SchemaVersion == 1 && configuration.Mode == "shadow"
 	isUsers := localUser(configuration.RadiusUser) && localUser(configuration.KeaUser)
@@ -137,6 +153,11 @@ func (c runtimeConfig) collectorOptions() (CollectorOptions, error) {
 		return CollectorOptions{}, errRuntime
 	}
 	options.Kea.Prefix = prefix
+	if c.HostPlacement != nil {
+		options.Placement = &PlacementOptions{
+			Interface: c.HostPlacement.Interface, Parent: c.HostPlacement.Parent, VLAN: c.VLAN, Timeout: 3 * time.Second,
+		}
+	}
 	if !validCollectorOptions(options) {
 		return CollectorOptions{}, errRuntime
 	}

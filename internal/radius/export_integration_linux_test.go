@@ -66,7 +66,12 @@ func TestPublishShadowCannotBecomeHelperBindings(t *testing.T) {
 	t.Parallel()
 	directory, root := privateExportRoot(t)
 	want := fixtureCollection(t)
-	_, err := publishIPv4(t.Context(), root, func(context.Context) (Collection, error) {
+	proposed, err := bindPlacement(want.Candidates[0], fixturePlacement(), fixtureLeaseScope(), "synthetic22", want.ObservedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want.PlacementChecked, want.ProposedBindings = true, []binding.Record{proposed}
+	_, err = publishIPv4(t.Context(), root, func(context.Context) (Collection, error) {
 		before, _ := readShadowFixture(t, directory)
 		if before.Complete || before.EnforcementReady || len(before.Collection.Candidates) != 0 {
 			t.Fatal("previous result remained complete during collection")
@@ -78,7 +83,8 @@ func TestPublishShadowCannotBecomeHelperBindings(t *testing.T) {
 	}
 	report, data := readShadowFixture(t, directory)
 	if !report.Complete || report.EnforcementReady || report.Mode != "shadow" || report.Kind != "radius_ipv4_shadow_v1" ||
-		len(report.Collection.Candidates) != 1 || report.Collection.Candidates[0] != want.Candidates[0] {
+		len(report.Collection.Candidates) != 1 || report.Collection.Candidates[0] != want.Candidates[0] ||
+		!report.Collection.PlacementChecked || len(report.Collection.ProposedBindings) != 1 {
 		t.Fatal("shadow fields or original times changed")
 	}
 	file, err := root.Open(shadowFilename)
