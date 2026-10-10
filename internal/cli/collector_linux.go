@@ -15,11 +15,12 @@ import (
 	"github.com/mikenorgate/router-policy-agent/internal/radius"
 )
 
-// RunCollector collects one root-only IPv4 shadow report. Exit codes are 0 for
+// RunCollector collects one root-only IPv4 shadow report or, with explicit
+// opt-in and matching configuration, a native binding export. Exit codes are 0 for
 // success/help/version, 1 for runtime or output failure, and 2 for invalid use.
 // Only counts are printed; device and upstream payloads stay in private storage.
 func RunCollector(ctx context.Context, args []string, streams CheckIO) int {
-	return runCollector(ctx, args, streams, radius.RunShadow)
+	return runCollectorModes(ctx, args, streams, radius.RunShadow, radius.RunBindings)
 }
 
 func runCollector(
@@ -28,18 +29,30 @@ func runCollector(
 	streams CheckIO,
 	collect func(context.Context, string) (radius.Collection, error),
 ) int {
-	if ctx == nil || streams.Out == nil || streams.Err == nil || collect == nil {
+	return runCollectorModes(ctx, args, streams, collect, nil)
+}
+
+func runCollectorModes(
+	ctx context.Context,
+	args []string,
+	streams CheckIO,
+	shadow func(context.Context, string) (radius.Collection, error),
+	bindings func(context.Context, string) (radius.Collection, error),
+) int {
+	if ctx == nil || streams.Out == nil || streams.Err == nil || shadow == nil {
 		return 2
 	}
 	var directory string
 	var version bool
+	var publishBindings bool
 	var messages bytes.Buffer
 	flags := flag.NewFlagSet("router-policy-collector", flag.ContinueOnError)
 	flags.SetOutput(&messages)
 	flags.StringVar(&directory, "config-directory", "", "private root-owned directory containing collector.json (required)")
 	flags.BoolVar(&version, "version", false, "print build version")
+	flags.BoolVar(&publishBindings, "publish-bindings", false, "publish native bindings from explicitly enrolled guarded-DHCP configuration")
 	flags.Usage = func() {
-		fmt.Fprintln(&messages, "Collect local RADIUS/DHCP evidence once; shadow only, never firewall enforcement.")
+		fmt.Fprintln(&messages, "Collect local RADIUS/DHCP evidence once; no firewall writes.")
 		fmt.Fprintln(&messages, "Usage: router-policy-collector -config-directory PATH")
 		fmt.Fprintln(&messages, "Root required. Fixed 30s deadline. No environment overrides or credentials.")
 		flags.PrintDefaults()
@@ -65,9 +78,16 @@ func runCollector(
 	if !collectorDirectory(directory) {
 		return collectorDiagnostic(streams.Err, "valid -config-directory required", 2)
 	}
+	collect, mode := shadow, "shadow"
+	if publishBindings {
+		if bindings == nil {
+			return collectorDiagnostic(streams.Err, "binding publisher unavailable", 2)
+		}
+		collect, mode = bindings, "bindings"
+	}
 	collection, err := collect(ctx, directory)
 	if err != nil {
-		return collectorDiagnostic(streams.Err, "shadow collection unavailable", 1)
+		return collectorDiagnostic(streams.Err, "collection unavailable", 1)
 	}
 	result := struct {
 		Mode             string `json:"mode"`
@@ -75,7 +95,7 @@ func runCollector(
 		EnforcementReady bool   `json:"enforcement_ready"`
 		Candidates       int    `json:"candidates"`
 		Withheld         int    `json:"withheld"`
-	}{Mode: "shadow", Complete: true, Candidates: len(collection.Candidates), Withheld: collection.Withheld}
+	}{Mode: mode, Complete: true, Candidates: len(collection.Candidates), Withheld: collection.Withheld}
 	if err := json.NewEncoder(streams.Out).Encode(result); err != nil {
 		return 1
 	}

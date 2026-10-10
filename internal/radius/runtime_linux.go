@@ -36,6 +36,7 @@ type runtimeConfig struct {
 	MaximumDevices  int               `json:"maximum_devices"`
 	OutputDirectory string            `json:"output_directory"`
 	HostPlacement   *runtimePlacement `json:"host_placement,omitempty"`
+	ManagedMACs     []string          `json:"managed_macs,omitempty"`
 }
 
 type runtimePlacement struct {
@@ -58,7 +59,34 @@ func runShadow(
 	configDirectory string,
 	publish func(context.Context, CollectorOptions, string) (Collection, error),
 ) (collected Collection, result error) {
-	if ctx == nil || os.Getuid() != 0 || os.Geteuid() != 0 || publish == nil {
+	if publish == nil {
+		return Collection{}, errRuntime
+	}
+	return runCollection(ctx, configDirectory, decodeRuntimeConfig,
+		func(ctx context.Context, configuration runtimeConfig, options CollectorOptions) (Collection, error) {
+			return publish(ctx, options, configuration.OutputDirectory)
+		})
+}
+
+// RunBindings is the explicit root-only native binding publisher. Its separate
+// configuration mode requires guarded placement and a fixed enrolled MAC list.
+// It does not accept a shadow file or install/enable the helper's packet guards.
+func RunBindings(ctx context.Context, configDirectory string) (Collection, error) {
+	return runCollection(ctx, configDirectory, decodeBindingsRuntimeConfig,
+		func(ctx context.Context, configuration runtimeConfig, options CollectorOptions) (Collection, error) {
+			return PublishBindingsIPv4(ctx, BindingPublisherOptions{
+				Collector: options, Directory: configuration.OutputDirectory, ManagedMACs: configuration.ManagedMACs,
+			})
+		})
+}
+
+func runCollection(
+	ctx context.Context,
+	configDirectory string,
+	decode func([]byte) (runtimeConfig, error),
+	publish func(context.Context, runtimeConfig, CollectorOptions) (Collection, error),
+) (collected Collection, result error) {
+	if ctx == nil || os.Getuid() != 0 || os.Geteuid() != 0 || decode == nil || publish == nil {
 		return Collection{}, errRuntime
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -85,7 +113,7 @@ func runShadow(
 	if err := errors.Join(readErr, checkErr, file.Close(), ctx.Err()); err != nil {
 		return Collection{}, errors.Join(errRuntime, ctx.Err())
 	}
-	configuration, err := decodeRuntimeConfig(data)
+	configuration, err := decode(data)
 	if err != nil {
 		return Collection{}, errRuntime
 	}
@@ -93,7 +121,7 @@ func runShadow(
 	if err != nil {
 		return Collection{}, errRuntime
 	}
-	collected, err = publish(ctx, options, configuration.OutputDirectory)
+	collected, err = publish(ctx, configuration, options)
 	if err != nil || ctx.Err() != nil {
 		return Collection{}, errors.Join(errRuntime, ctx.Err())
 	}
@@ -101,9 +129,22 @@ func runShadow(
 }
 
 func decodeRuntimeConfig(data []byte) (runtimeConfig, error) {
+	return decodeRuntimeMode(data, "shadow")
+}
+
+func decodeBindingsRuntimeConfig(data []byte) (runtimeConfig, error) {
+	return decodeRuntimeMode(data, "bindings")
+}
+
+func decodeRuntimeMode(data []byte, mode string) (runtimeConfig, error) {
 	keys := []string{"schema_version", "mode", "radius_user", "nas_prefixes", "kea_user", "kea_socket",
 		"subnet_id", "ipv4_prefix", "vlan", "maximum_devices", "output_directory"}
-	if err := strictjson.Object(data, keys, []string{"host_placement"}, maximumRuntimeConfig); err != nil {
+	optional := []string{"host_placement"}
+	if mode == "bindings" {
+		keys = append(keys, "managed_macs", "host_placement")
+		optional = nil
+	}
+	if err := strictjson.Object(data, keys, optional, maximumRuntimeConfig); err != nil {
 		return runtimeConfig{}, errRuntime
 	}
 	var configuration runtimeConfig
@@ -126,7 +167,7 @@ func decodeRuntimeConfig(data []byte) (runtimeConfig, error) {
 			return runtimeConfig{}, errRuntime
 		}
 	}
-	isSchema := configuration.SchemaVersion == 1 && configuration.Mode == "shadow"
+	isSchema := configuration.SchemaVersion == 1 && configuration.Mode == mode
 	isUsers := localUser(configuration.RadiusUser) && localUser(configuration.KeaUser)
 	isOutput := runtimePath(configuration.OutputDirectory, 4096)
 	if !isSchema || !isUsers || !isOutput {
@@ -134,6 +175,12 @@ func decodeRuntimeConfig(data []byte) (runtimeConfig, error) {
 	}
 	if _, err := configuration.collectorOptions(); err != nil {
 		return runtimeConfig{}, errRuntime
+	}
+	if mode == "bindings" {
+		isGuarded := configuration.HostPlacement != nil && configuration.HostPlacement.BindingMode == placementGuarded
+		if !isGuarded || !validManagedMACs(configuration.ManagedMACs, configuration.MaximumDevices) {
+			return runtimeConfig{}, errRuntime
+		}
 	}
 	return configuration, nil
 }

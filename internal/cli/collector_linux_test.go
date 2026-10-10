@@ -68,3 +68,31 @@ func TestCollectorCommandCountOnlyOutputAndBrokenWriter(t *testing.T) {
 		t.Fatal("actual runtime accepted absent config")
 	}
 }
+
+func TestCollectorBindingPublisherRequiresExplicitFlag(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "unchanged shadow default", args: []string{"-config-directory", "/synthetic/private"}, want: "shadow"},
+		{name: "explicit binding publication", args: []string{"-publish-bindings", "-config-directory", "/synthetic/private"}, want: "bindings"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			called := ""
+			collector := func(mode string) func(context.Context, string) (radius.Collection, error) {
+				return func(context.Context, string) (radius.Collection, error) {
+					called = mode
+					return radius.Collection{}, nil
+				}
+			}
+			var out bytes.Buffer
+			code := runCollectorModes(t.Context(), test.args, CheckIO{Out: &out, Err: io.Discard}, collector("shadow"), collector("bindings"))
+			if code != 0 || called != test.want || !strings.Contains(out.String(), `"mode":"`+test.want+`"`) {
+				t.Fatal("collector did not select explicit publisher")
+			}
+		})
+	}
+}

@@ -76,6 +76,16 @@ var errExpectedTLSRejection = errors.New("synthetic client rejected TLS")
 
 func startWireFixture(t *testing.T, certificate tls.Certificate, handler func(context.Context, *tls.Conn) error) *wireFixture {
 	t.Helper()
+	return startWireFixtureWithUpgrade(t, certificate, nil, handler)
+}
+
+func startWireFixtureWithUpgrade(
+	t *testing.T,
+	certificate tls.Certificate,
+	prepare func(net.Conn) error,
+	handler func(context.Context, *tls.Conn) error,
+) *wireFixture {
+	t.Helper()
 	ctx, cancel := context.WithCancel(t.Context())
 	var listenConfig net.ListenConfig
 	listener, err := listenConfig.Listen(ctx, "tcp", "127.0.0.1:0")
@@ -112,6 +122,14 @@ func startWireFixture(t *testing.T, certificate tls.Certificate, handler func(co
 						t.Error("synthetic connection close failed")
 					}
 				}()
+				if prepare != nil {
+					if err := prepare(connection); err != nil {
+						if ctx.Err() == nil {
+							t.Error("synthetic StartTLS preparation failed")
+						}
+						return
+					}
+				}
 				tlsConnection := tls.Server(connection, &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{certificate}})
 				if err := handler(ctx, tlsConnection); err != nil && ctx.Err() == nil && !errors.Is(err, errExpectedTLSRejection) {
 					t.Errorf("synthetic LDAP handler: %v", err)

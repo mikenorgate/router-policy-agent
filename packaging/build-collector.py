@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and scan an inert collector or helper package from a clean revision."""
+"""Build and scan an inert policy-agent component from a clean revision."""
 
 import argparse
 import hashlib
@@ -31,13 +31,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--version', required=True)
     parser.add_argument('--output', required=True, type=Path)
-    parser.add_argument('--command', choices=('router-policy-collector', 'router-policy-helper'),
+    parser.add_argument('--command', choices=('router-policy-collector', 'router-policy-helper',
+                                             'router-policy-reader'),
                         default='router-policy-collector')
     options = parser.parse_args()
     command = options.command
     component = command.removeprefix('router-policy-')
-    if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+-shadow\.[1-9][0-9]*', options.version):
-        parser.error('expected a version such as 0.1.0-shadow.1')
+    if not re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)'
+                        r'(?:-shadow\.[1-9][0-9]*)?', options.version):
+        parser.error('expected a version such as 0.1.0 or 0.1.0-shadow.1')
     destination = options.output.resolve()
     if destination == ROOT or ROOT in destination.parents or destination.exists():
         parser.error('output must be a new directory outside the source tree')
@@ -79,8 +81,11 @@ def main():
         (root / 'DEBIAN').mkdir()
         (root / 'usr/bin').mkdir(parents=True)
         (root / 'usr/share/doc' / command).mkdir(parents=True)
-        description = ('Root-private RADIUS and DHCP ownership observer' if component == 'collector'
-                       else 'Checked policy helper with explicit root-owned mode selection')
+        description = {
+            'collector': 'Root-private RADIUS and DHCP ownership collector',
+            'helper': 'Checked policy helper with explicit root-owned mode selection',
+            'reader': 'Unprivileged verified-TLS directory policy reader',
+        }[component]
         (root / 'DEBIAN/control').write_text(
             'Package: ' + command + '\nVersion: ' + debian_version + '\n'
             'Architecture: amd64\nMaintainer: Router Policy Agent maintainers\n'
@@ -99,7 +104,9 @@ def main():
         'schema': 1, 'version': options.version, 'debian_version': debian_version,
         'tag': 'v' + options.version, 'source_repository': REPOSITORY, 'source_commit': source,
         'source_date_epoch': epoch, 'go_version': go_version, 'cgo_enabled': False,
-        'command': command, 'mode': 'shadow' if component == 'collector' else 'explicit_configuration',
+        'command': command,
+        'mode': ('shadow' if component == 'collector' and '-shadow.' in options.version
+                 else 'explicit_configuration'),
         'architecture': 'amd64',
         'binary_sha256': digest(binary), 'package_filename': filename, 'package_sha256': digest(package),
         'scanner': 'govulncheck-v1.8.0', 'security_sha256': digest(report),

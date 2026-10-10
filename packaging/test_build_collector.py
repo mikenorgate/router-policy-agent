@@ -24,6 +24,7 @@ class CollectorPackageTests(unittest.TestCase):
         self.scan = 'No vulnerabilities found.\n'
         self.builds = 0
         self.command = 'router-policy-collector'
+        self.version = '0.1.0-shadow.1'
 
     def run_command(self, *arguments, env=None):
         if arguments == ('git', 'status', '--porcelain'):
@@ -45,7 +46,7 @@ class CollectorPackageTests(unittest.TestCase):
             Path(arguments[arguments.index('-o') + 1]).write_bytes(b'test collector binary')
             return ''
         if arguments == (str(self.output / self.command), '-version'):
-            return '0.1.0-shadow.1\n'
+            return self.version + '\n'
         if arguments[0] == 'govulncheck':
             return self.scan
         if arguments[0] == 'dpkg-deb':
@@ -54,7 +55,7 @@ class CollectorPackageTests(unittest.TestCase):
 
     def build(self):
         with patch.object(BUILDER, 'run', self.run_command), patch('sys.argv', [
-                'build-collector.py', '--version', '0.1.0-shadow.1', '--output', str(self.output),
+                'build-collector.py', '--version', self.version, '--output', str(self.output),
                 '--command', self.command]):
             BUILDER.main()
 
@@ -105,6 +106,43 @@ class CollectorPackageTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.build()
         self.assertEqual(self.builds, 0)
+
+    def test_reader_package_is_inert_and_explicitly_configured(self):
+        self.command = 'router-policy-reader'
+        self.version = '0.1.0'
+        self.build()
+        manifest = json.loads((self.output / 'reader-release.json').read_text())
+        package = self.output / manifest['package_filename']
+        self.assertEqual(manifest['command'], self.command)
+        self.assertEqual(manifest['version'], self.version)
+        self.assertEqual(manifest['mode'], 'explicit_configuration')
+        self.assertTrue((self.output / 'reader-security.txt').is_file())
+        with tempfile.TemporaryDirectory() as extracted:
+            root = Path(extracted)
+            subprocess.run(['dpkg-deb', '--extract', str(package), extracted], check=True)
+            self.assertEqual(sorted(str(path.relative_to(root)) for path in root.rglob('*') if path.is_file()),
+                             ['usr/bin/router-policy-reader', 'usr/share/doc/router-policy-reader/copyright'])
+            self.assertEqual((root / 'usr/bin/router-policy-reader').stat().st_mode & 0o7777, 0o755)
+        with tempfile.TemporaryDirectory() as controls:
+            subprocess.run(['dpkg-deb', '--control', str(package), controls], check=True)
+            self.assertEqual([path.name for path in Path(controls).iterdir()], ['control'])
+        self.assertEqual(BUILDER.digest(package), manifest['package_sha256'])
+
+    def test_stable_collector_requires_explicit_configuration(self):
+        self.version = '0.1.0'
+        self.build()
+        manifest = json.loads((self.output / 'collector-release.json').read_text())
+        self.assertEqual(manifest['mode'], 'explicit_configuration')
+        self.assertEqual(manifest['debian_version'], '0.1.0')
+
+    def test_noncanonical_versions_are_rejected(self):
+        for version in ('01.1.0', '0.01.0', '0.1.00', '0.1.0-shadow.0',
+                        '0.1.0-shadow.01', '0.1.0+local', '0.1.0;echo bad'):
+            with self.subTest(version=version):
+                self.version = version
+                with self.assertRaises(SystemExit):
+                    self.build()
+                self.assertEqual(self.builds, 0)
 
     def test_unpatched_toolchains_are_rejected(self):
         for version in ('go1.26.8', 'go1.27.1', 'go1.25.9', 'devel go1.28'):

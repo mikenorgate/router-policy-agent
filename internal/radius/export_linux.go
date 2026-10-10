@@ -37,6 +37,19 @@ func PublishIPv4(ctx context.Context, options CollectorOptions, directory string
 	if ctx == nil || os.Geteuid() != 0 || !validCollectorOptions(options) {
 		return Collection{}, errors.New("radius: invalid privileged publisher options")
 	}
+	return withExportRoot(ctx, directory, func(root *os.Root) (Collection, error) {
+		return publishIPv4(ctx, root, func(ctx context.Context) (Collection, error) { return CollectIPv4(ctx, options) })
+	})
+}
+
+func withExportRoot(
+	ctx context.Context,
+	directory string,
+	publish func(*os.Root) (Collection, error),
+) (collected Collection, result error) {
+	if ctx == nil || publish == nil || os.Geteuid() != 0 {
+		return Collection{}, errors.New("radius: invalid export owner or dependency")
+	}
 	root, err := hostfs.OpenDirectory(ctx, hostfs.DirectoryOptions{Path: directory, OwnerUID: 0, Private: true})
 	if err != nil {
 		return Collection{}, errors.New("radius: shadow directory unavailable")
@@ -67,7 +80,7 @@ func PublishIPv4(ctx context.Context, options CollectorOptions, directory string
 			result = errors.Join(result, errors.New("radius: shadow lock release failed"))
 		}
 	}()
-	return publishIPv4(ctx, root, func(ctx context.Context) (Collection, error) { return CollectIPv4(ctx, options) })
+	return publish(root)
 }
 
 func publishIPv4(ctx context.Context, root *os.Root, collect func(context.Context) (Collection, error)) (Collection, error) {
@@ -91,17 +104,25 @@ func publishIPv4(ctx context.Context, root *os.Root, collect func(context.Contex
 	return collected, nil
 }
 
-func writeShadow(ctx context.Context, root *os.Root, report shadowReport) (result error) {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+func writeShadow(ctx context.Context, root *os.Root, report shadowReport) error {
 	data, err := json.Marshal(report)
 	if err != nil || len(data) > maximumShadow {
 		return errors.New("radius: invalid shadow serialization")
 	}
+	return writeExport(ctx, root, shadowFilename, data)
+}
+
+func writeExport(ctx context.Context, root *os.Root, filename string, data []byte) (result error) {
+	if ctx == nil || root == nil || len(data) == 0 || len(data) > maximumShadow ||
+		(filename != shadowFilename && filename != "bindings.json") {
+		return errors.New("radius: invalid export")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// Refuse to replace links, special files or unsafe exports. Missing output is
 	// expected on first publication; no binding/state file is read or modified.
-	existing, err := hostfs.OpenRegular(ctx, root, hostfs.FileOptions{Name: shadowFilename, OwnerUID: 0, MaximumSize: maximumShadow})
+	existing, err := hostfs.OpenRegular(ctx, root, hostfs.FileOptions{Name: filename, OwnerUID: 0, MaximumSize: maximumShadow})
 	if err == nil {
 		if err := existing.Close(); err != nil {
 			return errors.New("radius: previous shadow close failed")
@@ -150,7 +171,7 @@ func writeShadow(ctx context.Context, root *os.Root, report shadowReport) (resul
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := root.Rename(name, shadowFilename); err != nil {
+	if err := root.Rename(name, filename); err != nil {
 		return errors.New("radius: shadow replacement failed")
 	}
 	if err := directory.Sync(); err != nil {
