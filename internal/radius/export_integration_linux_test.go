@@ -63,14 +63,32 @@ func fixtureCollection(t *testing.T) Collection {
 }
 
 func TestPublishShadowCannotBecomeHelperBindings(t *testing.T) {
+	for _, mode := range []string{"", placementReachable, placementGuarded} {
+		name := mode
+		if name == "" {
+			name = "default"
+		}
+		t.Run(name, func(t *testing.T) {
+			options := fixturePlacementOptions()
+			options.BindingMode = mode
+			testShadowCannotBecomeHelperBindings(t, options)
+		})
+	}
+}
+
+func testShadowCannotBecomeHelperBindings(t *testing.T, options PlacementOptions) {
+	t.Helper()
 	t.Parallel()
 	directory, root := privateExportRoot(t)
 	want := fixtureCollection(t)
-	proposed, err := bindPlacement(want.Candidates[0], fixturePlacement(), fixtureLeaseScope(), "synthetic22", want.ObservedAt)
+	proposed, err := bindPlacement(want.Candidates[0], fixturePlacement(), fixtureLeaseScope(), options, want.ObservedAt)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want.PlacementChecked, want.ProposedBindings = true, []binding.Record{proposed}
+	if options.BindingMode == placementGuarded {
+		want.PlacementMode = placementGuarded
+	}
 	_, err = publishIPv4(t.Context(), root, func(context.Context) (Collection, error) {
 		before, _ := readShadowFixture(t, directory)
 		if before.Complete || before.EnforcementReady || len(before.Collection.Candidates) != 0 {
@@ -84,7 +102,7 @@ func TestPublishShadowCannotBecomeHelperBindings(t *testing.T) {
 	report, data := readShadowFixture(t, directory)
 	if !report.Complete || report.EnforcementReady || report.Mode != "shadow" || report.Kind != "radius_ipv4_shadow_v1" ||
 		len(report.Collection.Candidates) != 1 || report.Collection.Candidates[0] != want.Candidates[0] ||
-		!report.Collection.PlacementChecked || len(report.Collection.ProposedBindings) != 1 {
+		!report.Collection.PlacementChecked || report.Collection.PlacementMode != want.PlacementMode || len(report.Collection.ProposedBindings) != 1 {
 		t.Fatal("shadow fields or original times changed")
 	}
 	file, err := root.Open(shadowFilename)

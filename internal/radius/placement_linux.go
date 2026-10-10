@@ -23,6 +23,11 @@ import (
 
 const maximumPlacement = 4 << 20
 
+const (
+	placementReachable = "reachable_neighbor"
+	placementGuarded   = "dhcp_packet_guarded"
+)
+
 // PlacementOptions pins the actual host VLAN and its parent. It is privileged
 // local configuration, never a device/directory claim. Timeout covers all reads.
 type PlacementOptions struct {
@@ -30,12 +35,17 @@ type PlacementOptions struct {
 	Parent    string
 	VLAN      uint16
 	Timeout   time.Duration
+
+	// BindingMode defaults to reachable_neighbor. dhcp_packet_guarded permits
+	// absent or matching idle ARP evidence for shadow proposals only.
+	BindingMode string
 }
 
 type ipv4Neighbor struct {
 	ip          netip.Addr
 	mac         string
 	confirmedAt time.Time
+	conflict    bool
 }
 
 type placementObservation struct {
@@ -54,7 +64,11 @@ func validPlacementOptions(options PlacementOptions) bool {
 	validNames := placementInterface(options.Interface) && placementInterface(options.Parent) && options.Interface != options.Parent
 	validScope := options.VLAN > 0 && options.VLAN <= 4094
 	validTimeout := options.Timeout > 0 && options.Timeout <= 5*time.Second
-	return validNames && validScope && validTimeout
+	return validNames && validScope && validTimeout && validPlacementMode(options.BindingMode)
+}
+
+func validPlacementMode(mode string) bool {
+	return mode == "" || mode == placementReachable || mode == placementGuarded
 }
 
 func placementInterface(name string) bool {
@@ -117,7 +131,7 @@ func capturePlacement(ctx context.Context, options PlacementOptions) (observed p
 	if err != nil {
 		return placementObservation{}, err
 	}
-	neighbors, err := decodePlacementNeighbors(data, options.Interface, neighborStarted.UTC())
+	neighbors, err := decodePlacementNeighbors(data, options.Interface, neighborStarted.UTC(), options.BindingMode)
 	if err != nil {
 		return placementObservation{}, err
 	}
@@ -229,7 +243,10 @@ func decodePlacementLinks(data []byte, options PlacementOptions) (placementLink,
 	return selected, nil
 }
 
-func decodePlacementNeighbors(data []byte, iface string, sampled time.Time) ([]ipv4Neighbor, error) {
+func decodePlacementNeighbors(data []byte, iface string, sampled time.Time, mode string) ([]ipv4Neighbor, error) {
+	if !validPlacementMode(mode) {
+		return nil, errors.New("radius: invalid placement mode")
+	}
 	rows, err := placementRows(data, 4096)
 	if err != nil {
 		return nil, err
@@ -243,10 +260,14 @@ func decodePlacementNeighbors(data []byte, iface string, sampled time.Time) ([]i
 		}
 		ip, err := netip.ParseAddr(address)
 		key := dev + "/" + address
-		if err != nil || !ip.Is4() || ip.String() != address || seen[key] {
+		if err != nil || !ip.Is4() || ip.String() != address || dev == "" || seen[key] {
 			return nil, errors.New("radius: invalid or conflicting neighbor identity")
 		}
 		seen[key] = true
+		if mode == placementGuarded {
+			neighbors = append(neighbors, guardedNeighbor(row, ip, dev == iface))
+			continue
+		}
 		if dev != iface {
 			continue
 		}
@@ -257,12 +278,8 @@ func decodePlacementNeighbors(data []byte, iface string, sampled time.Time) ([]i
 			!placementField(row, "lladdr", &mac) || !placementField(row, "confirmed", &age) {
 			continue // Unresolved, idle/stale and permanent entries provide no current placement.
 		}
-		unsupported := false
-		for _, field := range []string{"proxy", "managed", "extern_learn", "offload", "extern_valid", "router", "deleted", "miss"} {
-			unsupported = unsupported || row[field] != nil
-		}
 		canonical, err := policy.CanonicalMAC(mac)
-		if unsupported || err != nil || canonical != mac || !ip.IsGlobalUnicast() || age >= uint32(Freshness/time.Second) {
+		if unsupportedNeighbor(row) || err != nil || canonical != mac || !ip.IsGlobalUnicast() || age >= uint32(Freshness/time.Second) {
 			continue
 		}
 		// iproute2 truncates kernel confirmation age to seconds. Subtract one
@@ -273,13 +290,49 @@ func decodePlacementNeighbors(data []byte, iface string, sampled time.Time) ([]i
 	return neighbors, nil
 }
 
-func bindPlacement(candidate IPv4Candidate, observed placementObservation, scope LeaseScope, iface string, now time.Time) (binding.Record, error) {
+func unsupportedNeighbor(row map[string]json.RawMessage) bool {
+	for _, field := range []string{"proxy", "managed", "extern_learn", "offload", "extern_valid", "router", "deleted", "miss"} {
+		if row[field] != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// guardedNeighbor preserves contradictions rather than discarding them as an
+// absent cache entry. ARP is a conflict check here, not an ownership heartbeat.
+func guardedNeighbor(row map[string]json.RawMessage, ip netip.Addr, selectedInterface bool) ipv4Neighbor {
+	neighbor := ipv4Neighbor{ip: ip, conflict: true}
+	state := []string{}
+	var mac string
+	var age uint32
+	validState := placementField(row, "state", &state) && len(state) == 1 &&
+		slices.Contains([]string{"REACHABLE", "STALE", "DELAY", "PROBE"}, state[0])
+	validAge := row["confirmed"] == nil || placementField(row, "confirmed", &age)
+	validMAC := placementField(row, "lladdr", &mac)
+	canonical, err := policy.CanonicalMAC(mac)
+	if !selectedInterface || !ip.IsGlobalUnicast() || unsupportedNeighbor(row) || !validState || !validAge ||
+		!validMAC || err != nil || canonical != mac {
+		return neighbor
+	}
+	neighbor.mac, neighbor.conflict = mac, false
+	return neighbor
+}
+
+func bindPlacement(
+	candidate IPv4Candidate,
+	observed placementObservation,
+	scope LeaseScope,
+	options PlacementOptions,
+	now time.Time,
+) (binding.Record, error) {
 	lease := kea.Observation{ObservedAt: candidate.LeaseObservedAt, Leases: []kea.Lease{{
 		IP: candidate.IP, MAC: candidate.Session.MAC, SubnetID: scope.SubnetID,
 		UpdatedAt: candidate.LeaseUpdatedAt, ValidUntil: candidate.LeaseValidUntil,
 	}}}
 	checked, err := MatchIPv4(candidate.Session, lease, scope, now)
-	validObservation := binding.Fresh(observed.observedAt, now, Freshness) && len(observed.identity) == 64 && placementInterface(iface)
+	validObservation := binding.Fresh(observed.observedAt, now, Freshness) && len(observed.identity) == 64 &&
+		validPlacementOptions(options) && options.VLAN == scope.VLAN
 	if err != nil || checked != candidate || !validObservation {
 		return binding.Record{}, errors.New("radius: unqualified placement candidate")
 	}
@@ -289,20 +342,29 @@ func bindPlacement(candidate IPv4Candidate, observed placementObservation, scope
 			matches = append(matches, neighbor)
 		}
 	}
-	if len(matches) != 1 || matches[0].mac != candidate.Session.MAC || !binding.Fresh(matches[0].confirmedAt, now, Freshness) {
-		return binding.Record{}, errors.New("radius: missing, conflicting or stale placement")
-	}
-	if matches[0].confirmedAt.Before(candidate.Session.StartedAt) {
-		return binding.Record{}, errors.New("radius: placement predates current session")
+	conflict := len(matches) > 1 || len(matches) == 1 && (matches[0].conflict || matches[0].mac != candidate.Session.MAC)
+	if conflict {
+		return binding.Record{}, errors.New("radius: conflicting placement")
 	}
 	until := candidate.ValidUntil
-	if deadline := matches[0].confirmedAt.Add(Freshness); deadline.Before(until) {
-		until = deadline
+	ownership := digest(candidate.OwnershipID, observed.identity)
+	if options.BindingMode == placementGuarded {
+		ownership = digest(ownership, placementGuarded)
+	} else {
+		if len(matches) != 1 || !binding.Fresh(matches[0].confirmedAt, now, Freshness) {
+			return binding.Record{}, errors.New("radius: missing or stale placement")
+		}
+		if matches[0].confirmedAt.Before(candidate.Session.StartedAt) {
+			return binding.Record{}, errors.New("radius: placement predates current session")
+		}
+		if deadline := matches[0].confirmedAt.Add(Freshness); deadline.Before(until) {
+			until = deadline
+		}
 	}
 	return binding.Record{
-		MAC: candidate.Session.MAC, NAS: candidate.Session.NAS.String(), Interface: iface, VLAN: scope.VLAN,
+		MAC: candidate.Session.MAC, NAS: candidate.Session.NAS.String(), Interface: options.Interface, VLAN: scope.VLAN,
 		AssociatedAt: candidate.Session.ObservedAt, AssociationID: candidate.Session.AssociationID,
 		Addresses: []binding.Address{{IP: candidate.IP, Source: "kea_dhcp4", ObservedAt: candidate.LeaseObservedAt,
-			OwnershipID: digest(candidate.OwnershipID, observed.identity), ValidUntil: until}},
+			OwnershipID: ownership, ValidUntil: until}},
 	}, nil
 }

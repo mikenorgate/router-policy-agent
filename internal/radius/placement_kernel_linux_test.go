@@ -42,7 +42,7 @@ func TestPlacementNativeCapabilityFree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := bindPlacement(candidate, observed, scope, options.Interface, now); err != nil {
+	if _, err := bindPlacement(candidate, observed, scope, options, now); err != nil {
 		t.Fatal("matching real kernel observation did not produce a proposed binding")
 	}
 	for _, name := range []string{"wrong vlan", "wrong parent", "missing interface"} {

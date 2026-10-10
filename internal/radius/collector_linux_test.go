@@ -69,82 +69,90 @@ func TestCollectIPv4RechecksBothSourcesWithoutRefreshingEvidence(t *testing.T) {
 
 func TestCollectIPv4WithholdsObservedSourceRaces(t *testing.T) {
 	t.Parallel()
-	for _, name := range []string{"initial source loss", "middle source loss", "final source loss", "initial lease loss",
-		"recheck lease loss", "stop in middle", "stop at end", "roam", "heartbeat advanced", "history removed", "history rewritten",
-		"boot changed", "scope changed", "lease reassigned", "lease renewed", "lease missing", "stale final evidence", "clock reversed"} {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			original := fixtureCapturedHistory(t)
-			historyReads, leaseReads, clockReads := 0, 0, 0
-			result, err := collectIPv4(t.Context(), fixtureCollectorOptions(), collectionSources{
-				history: func(context.Context) (history, error) {
-					historyReads++
-					loss := name == "initial source loss" && historyReads == 1 ||
-						name == "middle source loss" && historyReads == 2 || name == "final source loss" && historyReads == 3
-					if loss {
-						return history{}, errors.New("synthetic unavailable source")
-					}
-					captured := original
-					if historyReads > 1 {
-						switch name {
-						case "stop in middle":
-							captured.data = append(bytes.Clone(original.data), fixtureHistory(t, fixtureEvent("Stop", 74))...)
-						case "stop at end":
-							if historyReads == 3 {
+	for _, mode := range []string{"disabled", placementReachable, placementGuarded} {
+		for _, name := range []string{"initial source loss", "middle source loss", "final source loss", "initial lease loss",
+			"recheck lease loss", "stop in middle", "stop at end", "roam", "heartbeat advanced", "history removed", "history rewritten",
+			"boot changed", "scope changed", "lease reassigned", "lease renewed", "lease missing", "stale final evidence", "clock reversed"} {
+			t.Run(mode+"/"+name, func(t *testing.T) {
+				t.Parallel()
+				original := fixtureCapturedHistory(t)
+				options := fixtureCollectorOptions()
+				if mode != "disabled" {
+					placement := fixturePlacementOptions()
+					placement.BindingMode, options.Placement = mode, &placement
+				}
+				historyReads, leaseReads, clockReads := 0, 0, 0
+				result, err := collectIPv4(t.Context(), options, collectionSources{
+					placement: func(context.Context) (placementObservation, error) { return fixturePlacement(), nil },
+					history: func(context.Context) (history, error) {
+						historyReads++
+						loss := name == "initial source loss" && historyReads == 1 ||
+							name == "middle source loss" && historyReads == 2 || name == "final source loss" && historyReads == 3
+						if loss {
+							return history{}, errors.New("synthetic unavailable source")
+						}
+						captured := original
+						if historyReads > 1 {
+							switch name {
+							case "stop in middle":
 								captured.data = append(bytes.Clone(original.data), fixtureHistory(t, fixtureEvent("Stop", 74))...)
+							case "stop at end":
+								if historyReads == 3 {
+									captured.data = append(bytes.Clone(original.data), fixtureHistory(t, fixtureEvent("Stop", 74))...)
+								}
+							case "roam":
+								roam := fixtureEvent("Start", 74)
+								roam.SessionSeconds, roam.SessionIDHex = "0", "73657373696f6e2d32"
+								captured.data = append(bytes.Clone(original.data), fixtureHistory(t, roam)...)
+							case "heartbeat advanced":
+								captured.data = append(bytes.Clone(original.data), fixtureHistory(t, fixtureEvent("Alive", 74))...)
+							case "history removed":
+								captured.data = fixtureHistory(t, fixtureEvent("Alive", 60))
+							case "history rewritten":
+								captured.data = bytes.ReplaceAll(original.data, []byte("synthetic-local"), []byte("replacement-local"))
+							case "boot changed":
+								captured.scope.BootID = strings.Repeat("f", 32)
+							case "scope changed":
+								captured.scope.ServiceUID++
 							}
-						case "roam":
-							roam := fixtureEvent("Start", 74)
-							roam.SessionSeconds, roam.SessionIDHex = "0", "73657373696f6e2d32"
-							captured.data = append(bytes.Clone(original.data), fixtureHistory(t, roam)...)
-						case "heartbeat advanced":
-							captured.data = append(bytes.Clone(original.data), fixtureHistory(t, fixtureEvent("Alive", 74))...)
-						case "history removed":
-							captured.data = fixtureHistory(t, fixtureEvent("Alive", 60))
-						case "history rewritten":
-							captured.data = bytes.ReplaceAll(original.data, []byte("synthetic-local"), []byte("replacement-local"))
-						case "boot changed":
-							captured.scope.BootID = strings.Repeat("f", 32)
-						case "scope changed":
-							captured.scope.ServiceUID++
 						}
-					}
-					return captured, nil
-				},
-				lease: func(context.Context, string) (kea.Observation, error) {
-					leaseReads++
-					if name == "initial lease loss" || name == "recheck lease loss" && leaseReads == 2 {
-						return kea.Observation{}, errors.New("synthetic lease unavailable")
-					}
-					lease := fixtureLeaseObservation()
-					if name == "lease missing" {
-						lease.Leases = []kea.Lease{}
-					}
-					if leaseReads == 2 {
-						switch name {
-						case "lease reassigned":
-							lease.Leases[0].MAC = "02AABBCCDDFF"
-						case "lease renewed":
-							lease.Leases[0].UpdatedAt = lease.Leases[0].UpdatedAt.Add(time.Minute)
+						return captured, nil
+					},
+					lease: func(context.Context, string) (kea.Observation, error) {
+						leaseReads++
+						if name == "initial lease loss" || name == "recheck lease loss" && leaseReads == 2 {
+							return kea.Observation{}, errors.New("synthetic lease unavailable")
 						}
-					}
-					return lease, nil
-				},
-				now: func() time.Time {
-					clockReads++
-					if name == "stale final evidence" && clockReads >= 5 {
-						return fixtureTime().Add(150 * time.Second)
-					}
-					if name == "clock reversed" && clockReads > 1 {
-						return original.observedAt.Add(-time.Second)
-					}
-					return original.observedAt
-				},
+						lease := fixtureLeaseObservation()
+						if name == "lease missing" {
+							lease.Leases = []kea.Lease{}
+						}
+						if leaseReads == 2 {
+							switch name {
+							case "lease reassigned":
+								lease.Leases[0].MAC = "02AABBCCDDFF"
+							case "lease renewed":
+								lease.Leases[0].UpdatedAt = lease.Leases[0].UpdatedAt.Add(time.Minute)
+							}
+						}
+						return lease, nil
+					},
+					now: func() time.Time {
+						clockReads++
+						if name == "stale final evidence" && clockReads >= 5 {
+							return fixtureTime().Add(150 * time.Second)
+						}
+						if name == "clock reversed" && clockReads > 1 {
+							return original.observedAt.Add(-time.Second)
+						}
+						return original.observedAt
+					},
+				})
+				if err == nil || len(result.Candidates) != 0 || !result.ObservedAt.IsZero() || result.Generation != "" {
+					t.Fatal("source race or failure produced a partial collection")
+				}
 			})
-			if err == nil || len(result.Candidates) != 0 || !result.ObservedAt.IsZero() || result.Generation != "" {
-				t.Fatal("source race or failure produced a partial collection")
-			}
-		})
+		}
 	}
 }
 

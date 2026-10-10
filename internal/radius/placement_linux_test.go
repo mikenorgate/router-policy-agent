@@ -63,12 +63,12 @@ func TestPlacementNeighborsKeepKernelConfirmationTime(t *testing.T) {
 	t.Parallel()
 	data := []byte(`[{"dst":"192.0.2.80","dev":"synthetic22","lladdr":"02:aa:bb:cc:dd:ee","state":["REACHABLE"],"used":0,"confirmed":10,"updated":0}]`)
 	now := fixtureTime().Add(75 * time.Second)
-	first, err := decodePlacementNeighbors(data, "synthetic22", now)
+	first, err := decodePlacementNeighbors(data, "synthetic22", now, "")
 	if err != nil || len(first) != 1 || first[0].confirmedAt != now.Add(-11*time.Second) {
 		t.Fatalf("kernel age not conservatively retained: %v", err)
 	}
 	reread := []byte(strings.Replace(string(data), `"confirmed":10`, `"confirmed":11`, 1))
-	last, err := decodePlacementNeighbors(reread, "synthetic22", now.Add(time.Second))
+	last, err := decodePlacementNeighbors(reread, "synthetic22", now.Add(time.Second), "")
 	if err != nil || !slices.Equal(first, last) {
 		t.Fatal("cache reread refreshed original placement")
 	}
@@ -91,7 +91,7 @@ func TestPlacementNeighborsKeepKernelConfirmationTime(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			input := []byte(strings.ReplaceAll(string(data), test.from, test.to))
-			got, err := decodePlacementNeighbors(input, "synthetic22", now)
+			got, err := decodePlacementNeighbors(input, "synthetic22", now, "")
 			if err != nil || len(got) != 0 {
 				t.Fatal("unqualified neighbor retained")
 			}
@@ -102,7 +102,7 @@ func TestPlacementNeighborsKeepKernelConfirmationTime(t *testing.T) {
 		[]byte(strings.Replace(string(data), `"confirmed":10`, `"confirmed":10,"confirmed":10`, 1)),
 		[]byte("[" + string(data[1:len(data)-1]) + "," + string(data[1:len(data)-1]) + "]"),
 	} {
-		if _, err := decodePlacementNeighbors(input, "synthetic22", now); err == nil {
+		if _, err := decodePlacementNeighbors(input, "synthetic22", now, ""); err == nil {
 			t.Fatal("ambiguous placement source accepted")
 		}
 	}
@@ -115,7 +115,7 @@ func TestBindPlacementClipsAndWithholds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := bindPlacement(candidate, fixturePlacement(), fixtureLeaseScope(), "synthetic22", now)
+	first, err := bindPlacement(candidate, fixturePlacement(), fixtureLeaseScope(), fixturePlacementOptions(), now)
 	if err != nil || first.Interface != "synthetic22" || first.VLAN != 22 || first.Addresses[0].ValidUntil != fixtureTime().Add(110*time.Second) {
 		t.Fatalf("placement did not clip binding to original confirmation: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestBindPlacementClipsAndWithholds(t *testing.T) {
 			case "foreign ownership":
 				value.OwnershipID = strings.Repeat("f", 64)
 			}
-			if got, err := bindPlacement(value, placement, fixtureLeaseScope(), "synthetic22", now); err == nil || got.MAC != "" {
+			if got, err := bindPlacement(value, placement, fixtureLeaseScope(), fixturePlacementOptions(), now); err == nil || got.MAC != "" {
 				t.Fatal("unqualified placement produced a record")
 			}
 		})

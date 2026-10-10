@@ -37,6 +37,7 @@ type Collection struct {
 	Candidates        []IPv4Candidate  `json:"candidates"`
 	Withheld          int              `json:"withheld"`
 	PlacementChecked  bool             `json:"placement_checked,omitempty"`
+	PlacementMode     string           `json:"placement_mode,omitempty"`
 	PlacementWithheld int              `json:"placement_withheld,omitempty"`
 	ProposedBindings  []binding.Record `json:"proposed_bindings,omitempty"`
 }
@@ -172,6 +173,10 @@ func collectIPv4(ctx context.Context, options CollectorOptions, sources collecti
 		result.PlacementChecked, result.ProposedBindings = true, []binding.Record{}
 	}
 	identities := []string{last.scope.BootID, digest(string(last.data))}
+	if options.Placement != nil && options.Placement.BindingMode == placementGuarded {
+		result.PlacementMode = placementGuarded
+		identities = append(identities, placementGuarded)
+	}
 	owners := make(map[netip.Addr]bool)
 	for index, session := range observation.Sessions {
 		candidate, err := MatchIPv4(session, leases[index], scope, result.ObservedAt)
@@ -182,8 +187,8 @@ func collectIPv4(ctx context.Context, options CollectorOptions, sources collecti
 		result.Candidates = append(result.Candidates, candidate)
 		identities = append(identities, candidate.Session.AssociationID, candidate.OwnershipID)
 		if options.Placement != nil {
-			first, firstErr := bindPlacement(candidate, firstPlacement, scope, options.Placement.Interface, result.ObservedAt)
-			last, lastErr := bindPlacement(candidate, lastPlacement, scope, options.Placement.Interface, result.ObservedAt)
+			first, firstErr := bindPlacement(candidate, firstPlacement, scope, *options.Placement, result.ObservedAt)
+			last, lastErr := bindPlacement(candidate, lastPlacement, scope, *options.Placement, result.ObservedAt)
 			if firstErr != nil || lastErr != nil {
 				result.PlacementWithheld++
 				continue

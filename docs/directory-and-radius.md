@@ -420,7 +420,9 @@ For example, a deployment with a VLAN link named `edge22` on `edge0` can add:
 "host_placement": {"interface": "edge22", "parent": "edge0"}
 ```
 
-Only these two fields are accepted; the VLAN comes from the existing collector
+The optional third field, `binding_mode`, selects the shadow evidence model;
+omission or `"reachable_neighbor"` keeps the strict default described below.
+Empty, null and unknown modes reject. The VLAN comes from the existing collector
 scope. Both links must be Ethernet links with UP and LOWER_UP flags. The child
 must be operationally UP, use 802.1Q with the configured VLAN ID, and name the
 pinned parent. Bridged/VRF-enslaved and cross-namespace links reject. Child and
@@ -433,7 +435,8 @@ Warnings, malformed/duplicate JSON, conflicting identities or source failure
 return no observation. No shell, active probes, neighbour writes, additional
 daemon, controller API or new dependency is involved.
 
-Only REACHABLE neighbours with a matching current MAC/IP can propose a binding.
+In the strict default, only REACHABLE neighbours with a matching current MAC/IP
+can propose a binding.
 The observer subtracts kernel confirmation age, plus one second for rounding,
 from query start. It does not treat `used`, a cache reread or DHCP renewal as
 new neighbour confirmation. The age fields are seconds in
@@ -444,9 +447,54 @@ device can therefore lose its proposal until ordinary permitted traffic
 refreshes reachability; this implementation adds no permit or probe to do so.
 Live idle-device availability remains a qualification item before enforcement.
 
-Placement is read twice around the lease recheck. A proposal requires matching
-placement in both reads and keeps the earliest original session, DHCP and
-neighbour-confirmation deadline. The report adds `placement_checked`,
+#### Opt-in DHCP/packet-guarded IPv4 shadow mode
+
+The source also supports this explicit, root-owned configuration:
+
+```json
+"host_placement": {
+  "interface": "edge22",
+  "parent": "edge0",
+  "binding_mode": "dhcp_packet_guarded"
+}
+```
+
+This mode proposes an expected IPv4 tuple from the fresh authenticated RADIUS
+session and current authoritative Kea lease on the verified host VLAN path. It
+does not independently prove the client's attachment. An absent ARP entry or
+a matching dynamic REACHABLE, STALE, DELAY or PROBE entry does not withhold the
+proposal. Confirmation age, including confirmation before a new session Start,
+is not an ownership heartbeat and contributes no deadline. Cache rereads never
+renew the original session or DHCP expiry.
+
+A candidate IP seen on another interface, a different MAC, duplicate identity,
+malformed evidence, unresolved/failed/permanent state or managed/proxy/offloaded
+entry still withholds the proposal or rejects the source. Both host reads and
+the existing RADIUS/DHCP rechecks remain mandatory. Stop, reassignment, renewal
+during collection, expired evidence, changed VLAN geometry and source failure
+still deny. Unrelated neighbour entries do not grant or revoke that device.
+
+Reports identify this mode with `placement_mode: "dhcp_packet_guarded"` and use
+mode-specific generation and ownership identities. Strict-default reports keep
+their existing shape. Both modes remain shadow-only: there is no helper-feed
+export or enforcement option. Existing releases must not be assumed to support
+the new field; publishing, package pinning and installed-service qualification
+remain separate deployment steps.
+
+Before any future enforcement, qualify the exact interface/MAC/IP ingress
+guards and actual destination-MAC checks at final egress for native and reviewed
+translated paths. Those guards are prerequisites, not enabled by this mode.
+Dropping recent ARP confirmation accepts less independent placement evidence;
+it does not remove MAC-cloning risk or strengthen MAC-based authentication.
+This mode qualifies no native IPv6 or static address and adds no probe,
+controller client, daemon, dependency or capability.
+
+#### Shared collection and deployment boundary
+
+Placement is read twice around the lease recheck. Both reads must satisfy the
+selected model. A proposal keeps the earliest original session and DHCP
+deadline, plus the neighbour-confirmation deadline in strict mode. The report
+adds `placement_checked`,
 `placement_withheld` and `proposed_bindings`, but retains its distinct shadow
 schema and `enforcement_ready: false`. The binding loader rejects the report
 even if renamed to `bindings.json`; there is no authoritative-export switch.

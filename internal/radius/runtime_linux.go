@@ -39,8 +39,9 @@ type runtimeConfig struct {
 }
 
 type runtimePlacement struct {
-	Interface string `json:"interface"`
-	Parent    string `json:"parent"`
+	Interface   string `json:"interface"`
+	Parent      string `json:"parent"`
+	BindingMode string `json:"binding_mode,omitempty"`
 }
 
 // RunShadow performs one root-only, bounded collection from collector.json in
@@ -114,7 +115,14 @@ func decodeRuntimeConfig(data []byte) (runtimeConfig, error) {
 		if err := strictjson.Decode(data, &values, maximumRuntimeConfig); err != nil {
 			return runtimeConfig{}, errRuntime
 		}
-		if err := strictjson.Object(values["host_placement"], []string{"interface", "parent"}, nil, maximumRuntimeConfig); err != nil {
+		if err := strictjson.Object(values["host_placement"], []string{"interface", "parent"}, []string{"binding_mode"}, maximumRuntimeConfig); err != nil {
+			return runtimeConfig{}, errRuntime
+		}
+		placement := map[string]json.RawMessage{}
+		if err := strictjson.Decode(values["host_placement"], &placement, maximumRuntimeConfig); err != nil {
+			return runtimeConfig{}, errRuntime
+		}
+		if placement["binding_mode"] != nil && configuration.HostPlacement.BindingMode == "" {
 			return runtimeConfig{}, errRuntime
 		}
 	}
@@ -156,6 +164,7 @@ func (c runtimeConfig) collectorOptions() (CollectorOptions, error) {
 	if c.HostPlacement != nil {
 		options.Placement = &PlacementOptions{
 			Interface: c.HostPlacement.Interface, Parent: c.HostPlacement.Parent, VLAN: c.VLAN, Timeout: 3 * time.Second,
+			BindingMode: c.HostPlacement.BindingMode,
 		}
 	}
 	if !validCollectorOptions(options) {
