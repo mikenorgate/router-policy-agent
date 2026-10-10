@@ -15,22 +15,13 @@ again on each call; it caches neither credentials nor directory entries.
 Concurrent calls use separate connections. A shared credential callback must
 itself be safe for concurrent use and honor its context.
 
-By default, only explicit `ldaps://host:port` endpoints are accepted. TLS verifies both the
+Only explicit `ldaps://host:port` endpoints are accepted. TLS verifies both the
 certificate chain and hostname, using system roots or a cloned deployment CA
-pool, with TLS 1.2 as the minimum. There is no disabled-verification option,
-plaintext fallback, referral following or StartTLS implementation. Connection, bind and
+pool, with TLS 1.2 as the minimum. There is no insecure option, plaintext
+fallback, referral following or StartTLS implementation. Connection, bind and
 all searches share a deadline of at most ten seconds. Cancellation closes the
 socket and joins LDAP cleanup. Errors expose a fixed collection failure and,
 where applicable, cancellation, not server diagnostics or private endpoints.
-
-A deployment may explicitly set `PlaintextUntil` for a temporary LDAP test.
-This accepts only `ldap://` with a private or loopback literal IP, no IPv6 zone
-or mapped address, no custom CA, and an expiry within 24 hours of startup.
-It is not selected after a TLS failure. Expiry is checked before credentials,
-caps the connection deadline, and is checked again before returning a snapshot.
-Credentials and directory data are unencrypted on this path. Expiry stops new
-collection; previously accepted grants keep their normal, independently bounded
-lease deadlines. This exception does not qualify production TLS or source authority.
 
 The collector performs one-level paged searches below `ou=groups` and
 `ou=users` in one configured provider base. Each group remains an individual
@@ -132,11 +123,6 @@ directory rather than granting the process access to privileged configuration.
 | `helper_socket` | Clean absolute request-socket path, at most 107 bytes. Its filesystem ownership and root peer UID are checked before sending. |
 | `custom_ca` | If true, use only the checked `ca.pem` in this directory; otherwise use system roots. |
 
-The optional `plaintext_until` field must be a UTC RFC3339 timestamp ending in
-`Z`. A nonempty value enables only the bounded private-literal-IP exception
-above and requires `custom_ca: false`. Omission or an empty string keeps the
-verified-LDAPS default. Null, malformed, expired and overlong exceptions reject.
-
 The file is capped at 16 KiB. Unknown, duplicate, case-variant, missing and null
 fields reject startup. There are no environment overrides or command-line secret,
 binding, time, mode or protection switches. `ca.pem` is capped at 64 KiB and 32
@@ -237,9 +223,9 @@ current implementation and tests do not enable them.
 
 ### Current DHCPv4 lease query
 
-`internal/kea.ReadIPv4` is a prepared component for the trusted RADIUS-side
-producer. It queries a local Kea daemon with `lease4-get-by-hw-address`; it is
-not wired into either running command and does not produce `binding.Snapshot`.
+`internal/kea.ReadIPv4` is used by the local shadow collector. It queries a
+local Kea daemon with `lease4-get-by-hw-address` and does not produce
+`binding.Snapshot`.
 There is no new controller API, service, dependency or network control agent.
 
 The client checks the Unix socket's owner, permissions and ancestors, then
