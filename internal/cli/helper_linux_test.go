@@ -24,6 +24,12 @@ func TestRunHelperArgumentsAndRedaction(t *testing.T) {
 		{name: "relative directory", args: []string{"-config-directory", "config", "-initialize-state"}, code: 2},
 		{name: "unclean directory", args: []string{"-config-directory", "/synthetic/../config", "-initialize-state"}, code: 2},
 		{name: "initialization with bindings", args: []string{"-config-directory", "/synthetic/config", "-binding-directory", "/synthetic/bindings", "-initialize-state"}, code: 2},
+		{name: "render without baseline", args: []string{"-render-image-guards"}, code: 2},
+		{name: "baseline without render", args: []string{"-baseline", "../../examples/baseline.json"}, code: 2},
+		{name: "render with runtime configuration", args: []string{"-render-image-guards", "-baseline", "../../examples/baseline.json", "-config-directory", "/synthetic/config"}, code: 2},
+		{name: "render with bindings", args: []string{"-render-image-guards", "-baseline", "../../examples/baseline.json", "-binding-directory", "/synthetic/bindings"}, code: 2},
+		{name: "render with initialization", args: []string{"-render-image-guards", "-baseline", "../../examples/baseline.json", "-initialize-state"}, code: 2},
+		{name: "render unavailable baseline", args: []string{"-render-image-guards", "-baseline", "/synthetic/private-value/absent.json"}, code: 1},
 		{name: "unknown flag", args: []string{"-token", "synthetic-private-value"}, code: 2},
 		{name: "positional argument", args: []string{"synthetic-private-value"}, code: 2},
 		{name: "runtime failure", args: []string{"-config-directory", "/synthetic/config", "-binding-directory", "/synthetic/bindings"}, code: 1, serve: 1},
@@ -56,6 +62,36 @@ func TestRunHelperArgumentsAndRedaction(t *testing.T) {
 				t.Fatal("helper exposed upstream diagnostics or wrote them to stdout")
 			}
 		})
+	}
+}
+
+func TestRunHelperImageRenderingNeverStartsRuntime(t *testing.T) {
+	t.Parallel()
+	args := []string{"-render-image-guards", "-baseline", "../../examples/baseline.json"}
+	serve := func(context.Context, string, string) error {
+		t.Fatal("image rendering started the helper")
+		return nil
+	}
+	initialize := func(context.Context, string) error {
+		t.Fatal("image rendering initialized history")
+		return nil
+	}
+	var out, diagnostics bytes.Buffer
+	if code := runHelper(t.Context(), args, CheckIO{Out: &out, Err: &diagnostics}, serve, initialize); code != 0 {
+		t.Fatal("valid image rendering failed")
+	}
+	if diagnostics.Len() != 0 || !strings.Contains(out.String(), "chain guard_forward") ||
+		!strings.Contains(out.String(), "chain guard_confirm") || !strings.Contains(out.String(), "table netdev ") {
+		t.Fatal("image rendering omitted fixed guards or emitted diagnostics")
+	}
+	if code := runHelper(t.Context(), args, CheckIO{Out: failedWriter{}, Err: io.Discard}, serve, initialize); code != 1 {
+		t.Fatal("image rendering ignored a failed output")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	out.Reset()
+	if code := runHelper(ctx, args, CheckIO{Out: &out, Err: io.Discard}, serve, initialize); code != 1 || out.Len() != 0 {
+		t.Fatal("cancelled image rendering emitted a program")
 	}
 }
 

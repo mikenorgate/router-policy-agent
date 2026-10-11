@@ -35,3 +35,9 @@ the complete protected-policy projection still belong to the router integrator.
 Installing these packages alone is not a production deployment. Follow the
 [implementation gates](architecture.md#implementation-gates) before activation;
 do not replace missing readiness evidence with a generated hash or fixture.
+
+For offline image assembly, `router-policy-helper -render-image-guards -baseline
+FILE` prints the code-owned guard program to stdout. It accepts no runtime
+operation, does not invoke nftables, and does not initialize history or writer
+state. The image owner must independently audit and install the guards alongside
+its protected floor; rendering is not activation or readiness evidence.
