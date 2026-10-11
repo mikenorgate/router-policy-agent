@@ -86,7 +86,7 @@ func (layout *guardLayout) schema(family string) (*guardTableSchema, error) {
 		_, translated := layout.translatedForward("return", false)
 		schema.rules["guard_forward"] = append(schema.rules["guard_forward"], translated...)
 		schema.rules["guard_forward"] = append(schema.rules["guard_forward"],
-			guardForwardExpressions("return", numbers)...)
+			guardForwardExpressions("return")...)
 		schema.rules["guard_forward"] = append(schema.rules["guard_forward"], layout.controllerIdentityExpressions()...)
 		schema.rules["guard_forward"] = append(schema.rules["guard_forward"], guardClassificationExpressions()...)
 		schema.rules["guard_confirm"] = [][]any{{map[string]any{"jump": map[string]any{"target": "permit_flow"}}}}
@@ -106,7 +106,8 @@ func (layout *guardLayout) schema(family string) (*guardTableSchema, error) {
 		schema.rules["permit_flow"] = append(schema.rules["permit_flow"], layout.controllerForwardExpressions("accept", true)...)
 		_, translated = layout.translatedForward("accept", true)
 		schema.rules["permit_flow"] = append(schema.rules["permit_flow"], translated...)
-		schema.rules["permit_flow"] = append(schema.rules["permit_flow"], guardForwardExpressions("accept", numbers)...)
+		schema.rules["permit_flow"] = append(schema.rules["permit_flow"], guardForwardExpressions("accept")...)
+		schema.addStampChains()
 		return schema, nil
 	}
 	for index, device := range layout.interfaces {
@@ -166,7 +167,7 @@ func guardClassificationExpressions() [][]any {
 	return rules
 }
 
-func guardForwardExpressions(verdict string, numbers map[string]uint64) [][]any {
+func guardForwardExpressions(verdict string) [][]any {
 	rules := make([][]any, 0, 2*len(grantSets))
 	for _, name := range grantSets {
 		address, protocol := guardProtocol(name)
@@ -193,8 +194,7 @@ func guardForwardExpressions(verdict string, numbers map[string]uint64) [][]any 
 					map[string]any{"set": []string{"established", "new"}}),
 				guardMatch(map[string]any{"ct": map[string]any{"key": "direction"}}, flow.direction),
 				guardMatch(map[string]any{"concat": flow.key}, "@"+flow.set),
-				guardMark(guardBinary("|", guardBinary("&", guardMeta("mark"), numbers[guardMarkKeep]), guardListener())),
-				guardMark(guardBinary("|", guardMeta("mark"), numbers[flow.tag])), map[string]any{verdict: nil},
+				guardStampGoto(flow.tag, verdict),
 			})
 		}
 	}

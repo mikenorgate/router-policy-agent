@@ -78,11 +78,9 @@ func (layout *guardLayout) translatedForward(verdict string, confirmation bool) 
 					guardMatch(map[string]any{"concat": []any{
 						guardMeta(incoming), guardPayload("ip6", source), guardPayload("ip6", target), guardListener(),
 					}}, "@transit_from6_"+protocol),
-					guardMark(guardBinary("|", guardBinary("&", guardMeta("mark"), uint64(0x00ff0000)), guardListener())),
-					guardMark(guardBinary("|", guardMeta("mark"), tagValue)), map[string]any{verdict: nil},
+					guardStampGoto(tag, verdict),
 				)
-				selector += "meta mark set (meta mark & " + guardMarkKeep + ") | ct original proto-dst " +
-					"meta mark set meta mark | " + tag + " " + verdict
+				selector += "goto " + guardStampChain(tag, verdict)
 				lines, rules = append(lines, selector), append(rules, expressions)
 			}
 		}

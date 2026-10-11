@@ -65,6 +65,11 @@ table inet guard_router_fixture {
  counter fixture_protected_drop {}
  counter fixture_bridge_accept {}
  counter fixture_stateful_accept {}
+ counter fixture_mark_corruption {}
+ chain fixture_mark {
+  type filter hook forward priority -200; policy accept;
+  meta mark set 0x005a0000
+ }
  chain fixture_stateful {
   ct state established counter name fixture_stateful_accept accept
  }
@@ -73,6 +78,7 @@ table inet guard_router_fixture {
  }
  chain fixture_application {
   type filter hook forward priority 0; policy drop;
+  meta mark & 0x00ff0000 != 0x005a0000 counter name fixture_mark_corruption drop
   meta l4proto { tcp, udp } ip saddr . ct original proto-dst @protected4 counter name fixture_protected_drop drop
   meta l4proto { tcp, udp } ip daddr . ct original proto-dst @protected4 counter name fixture_protected_drop drop
   meta l4proto { tcp, udp } ip6 saddr . ct original proto-dst @protected6 counter name fixture_protected_drop drop
@@ -130,6 +136,9 @@ table inet guard_router_fixture {
 			}
 			if guardFixtureCounter(ctx, t, "guard_router_fixture", "fixture_bridge_accept") != bridgeBefore+4 {
 				t.Fatal("all four leased direction tags did not traverse the separate router bridge")
+			}
+			if guardFixtureCounter(ctx, t, "guard_router_fixture", "fixture_mark_corruption") != 0 {
+				t.Fatal("listener stamping overwrote mark bits reserved for the router")
 			}
 			packetNft(ctx, t, "add rule inet guard_router_fixture fixture_stateful "+
 				"ct state established counter name fixture_stateful_accept accept")

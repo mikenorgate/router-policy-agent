@@ -130,7 +130,9 @@ func (layout *guardLayout) program(ctx context.Context) ([]byte, error) {
 	translated, _ = layout.translatedForward("accept", true)
 	lines = append(lines, translated...)
 	lines = append(lines, guardLookups("accept")...)
-	lines = append(lines, "}", "}", "table netdev "+ownedTable+" {",
+	lines = append(lines, "}")
+	lines = append(lines, guardStampProgram()...)
+	lines = append(lines, "}", "table netdev "+ownedTable+" {",
 		fmt.Sprintf("set %s { type ether_addr; size %d; }", cohortSet, maximumCohortSize))
 	for _, name := range grantSets {
 		addressType := "ipv6_addr"
@@ -248,12 +250,12 @@ func guardLookups(verdict string) []string {
 		lines = append(lines,
 			fmt.Sprintf("meta l4proto %s ct state { new, established } ct direction %s "+
 				"iifname . ether saddr . %s saddr . %s daddr . ct original proto-dst @%s "+
-				"meta mark set (meta mark & %s) | ct original proto-dst meta mark set meta mark | %s %s",
-				protocol, sourceDirection, family, family, name, guardMarkKeep, outgoing, verdict),
+				"goto %s",
+				protocol, sourceDirection, family, family, name, guardStampChain(outgoing, verdict)),
 			fmt.Sprintf("meta l4proto %s ct state { new, established } ct direction %s "+
 				"oifname . %s daddr . %s saddr . ct original proto-dst @%s "+
-				"meta mark set (meta mark & %s) | ct original proto-dst meta mark set meta mark | %s %s",
-				protocol, targetDirection, family, family, inboundSet(name), guardMarkKeep, incoming, verdict),
+				"goto %s",
+				protocol, targetDirection, family, family, inboundSet(name), guardStampChain(incoming, verdict)),
 		)
 	}
 	return lines
