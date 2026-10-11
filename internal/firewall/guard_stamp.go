@@ -11,18 +11,20 @@ func guardStampChain(tag, verdict string) string {
 	return "stamp_" + strings.TrimPrefix(tag, "0x") + "_" + verdict
 }
 
-// Linux 6.12 cannot OR two variable registers. Dispatch the eight preserved
-// mark bits to fixed constants instead: copy the original listener, restore
-// those bits, then stamp the fixed direction tag. No caller chooses this graph.
+// Linux 6.12 cannot OR two variable registers. Each set router-owned bit adds
+// one fixed restore operation to the call stack before the listener is copied.
+// Eight bits require at most eight nested jumps, below nft's stack limit even
+// with the permit and tag chains. No caller chooses this bounded graph.
 func guardStampProgram() []string {
-	lines := []string{"chain " + guardListenerChain + " {"}
-	for value := uint64(0); value < 256; value++ {
-		keep := value << 16
-		lines = append(lines, fmt.Sprintf(
-			"meta mark & %s == 0x%08x meta mark set ct original proto-dst "+
-				"meta mark set meta mark | 0x%08x return", guardMarkKeep, keep, keep))
+	lines := []string{}
+	for index := range 8 {
+		bit := uint64(1) << (16 + index)
+		next := guardStampBitChain(index + 1)
+		lines = append(lines, "chain "+guardStampBitChain(index)+" {",
+			fmt.Sprintf("meta mark & 0x%08x == 0 goto %s", bit, next),
+			"jump "+next, fmt.Sprintf("meta mark set meta mark | 0x%08x return", bit), "}")
 	}
-	lines = append(lines, "}")
+	lines = append(lines, "chain "+guardStampBitChain(8)+" {", "meta mark set ct original proto-dst return", "}")
 	for _, tag := range guardStampTags() {
 		for _, verdict := range []string{"return", "accept"} {
 			lines = append(lines, "chain "+guardStampChain(tag.text, verdict)+" {",
@@ -34,20 +36,20 @@ func guardStampProgram() []string {
 }
 
 func (schema *guardTableSchema) addStampChains() {
-	schema.chains[guardListenerChain] = guardStampHeader(guardListenerChain)
-	for value := uint64(0); value < 256; value++ {
-		keep := value << 16
-		restored := guardBinary("|", guardMeta("mark"), keep)
-		if keep == 0 {
-			// nft folds the identity OR into a plain mark copy in its listing.
-			restored = guardMeta("mark")
+	for index := range 8 {
+		bit := uint64(1) << (16 + index)
+		name, next := guardStampBitChain(index), guardStampBitChain(index+1)
+		schema.chains[name] = guardStampHeader(name)
+		schema.rules[name] = [][]any{
+			{guardMatch(guardBinary("&", guardMeta("mark"), bit), uint64(0)),
+				map[string]any{"goto": map[string]any{"target": next}}},
+			{map[string]any{"jump": map[string]any{"target": next}}},
+			{guardMark(guardBinary("|", guardMeta("mark"), bit)), map[string]any{"return": nil}},
 		}
-		schema.rules[guardListenerChain] = append(schema.rules[guardListenerChain], []any{
-			guardMatch(guardBinary("&", guardMeta("mark"), uint64(0x00ff0000)), keep),
-			guardMark(guardListener()), guardMark(restored),
-			map[string]any{"return": nil},
-		})
 	}
+	leaf := guardStampBitChain(8)
+	schema.chains[leaf] = guardStampHeader(leaf)
+	schema.rules[leaf] = [][]any{{guardMark(guardListener()), map[string]any{"return": nil}}}
 	for _, tag := range guardStampTags() {
 		for _, verdict := range []string{"return", "accept"} {
 			name := guardStampChain(tag.text, verdict)
@@ -58,6 +60,13 @@ func (schema *guardTableSchema) addStampChains() {
 			}
 		}
 	}
+}
+
+func guardStampBitChain(index int) string {
+	if index == 0 {
+		return guardListenerChain
+	}
+	return fmt.Sprintf("stamp_listener_%d", index)
 }
 
 func guardStampHeader(name string) map[string]any {

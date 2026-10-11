@@ -68,7 +68,8 @@ table inet guard_router_fixture {
  counter fixture_mark_corruption {}
  chain fixture_mark {
   type filter hook forward priority -200; policy accept;
-  meta mark set 0x005a0000
+  meta nfproto ipv4 meta mark set 0x00ff0000
+  meta nfproto ipv6 meta mark set 0x005a0000
  }
  chain fixture_stateful {
   ct state established counter name fixture_stateful_accept accept
@@ -78,7 +79,8 @@ table inet guard_router_fixture {
  }
  chain fixture_application {
   type filter hook forward priority 0; policy drop;
-  meta mark & 0x00ff0000 != 0x005a0000 counter name fixture_mark_corruption drop
+  meta nfproto ipv4 meta mark & 0x00ff0000 != 0x00ff0000 counter name fixture_mark_corruption drop
+  meta nfproto ipv6 meta mark & 0x00ff0000 != 0x005a0000 counter name fixture_mark_corruption drop
   meta l4proto { tcp, udp } ip saddr . ct original proto-dst @protected4 counter name fixture_protected_drop drop
   meta l4proto { tcp, udp } ip daddr . ct original proto-dst @protected4 counter name fixture_protected_drop drop
   meta l4proto { tcp, udp } ip6 saddr . ct original proto-dst @protected6 counter name fixture_protected_drop drop

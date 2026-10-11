@@ -23,21 +23,26 @@ func TestGuardStampAvoidsVariableBitwiseOperands(t *testing.T) {
 	}
 }
 
-func TestGuardStampCoversEveryPreservedByte(t *testing.T) {
+func TestGuardStampUsesBoundedBitDispatch(t *testing.T) {
 	t.Parallel()
 	program := strings.Join(guardStampProgram(), "\n")
 	schema := &guardTableSchema{chains: map[string]map[string]any{}, rules: map[string][][]any{}}
 	schema.addStampChains()
-	if len(schema.rules[guardListenerChain]) != 256 || len(schema.chains) != 13 {
-		t.Fatal("fixed stamping graph does not cover exactly eight preserved bits and six direction tags")
+	if len(schema.chains) != 21 {
+		t.Fatal("fixed stamping graph does not contain exactly nine bit chains and twelve direction chains")
 	}
-	for value := uint64(0); value < 256; value++ {
-		keep := value << 16
-		want := fmt.Sprintf("meta mark & 0x00ff0000 == 0x%08x meta mark set ct original proto-dst "+
-			"meta mark set meta mark | 0x%08x return", keep, keep)
-		if strings.Count(program, want) != 1 {
-			t.Fatalf("preserved byte %02x is not restored exactly once", value)
+	for index := range 8 {
+		bit := uint64(1) << (16 + index)
+		next := guardStampBitChain(index + 1)
+		want := fmt.Sprintf("chain %s {\nmeta mark & 0x%08x == 0 goto %s\njump %s\n"+
+			"meta mark set meta mark | 0x%08x return\n}", guardStampBitChain(index), bit, next, next, bit)
+		if strings.Count(program, want) != 1 || len(schema.rules[guardStampBitChain(index)]) != 3 {
+			t.Fatalf("preserved bit %08x does not have one bounded restore branch", bit)
 		}
+	}
+	if !strings.Contains(program, "chain stamp_listener_8 {\nmeta mark set ct original proto-dst return\n}") ||
+		len(schema.rules[guardStampBitChain(8)]) != 1 {
+		t.Fatal("listener copy does not terminate the eight-bit dispatch")
 	}
 	for _, tag := range []string{fromOriginalTag, fromReplyTag, toOriginalTag, toReplyTag,
 		translatedOriginalTag, translatedReplyTag} {
