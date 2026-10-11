@@ -34,6 +34,7 @@ type guardLayout struct {
 	controllers       []controllerLeg
 	controllerAliases []netip.Addr
 	translationPaths  []deviceTranslationPath
+	bootstrapPaths    []policy.BootstrapPath
 }
 
 func newGuardLayout(baseline policy.Baseline) (*guardLayout, error) {
@@ -67,6 +68,7 @@ func newGuardLayout(baseline policy.Baseline) (*guardLayout, error) {
 		interfaces: interfaces, managedInterfaces: managed, controllers: controllerLegs(validated),
 		controllerAliases: controllerAliasIdentities(validated),
 		translationPaths:  deviceTranslationPaths(validated),
+		bootstrapPaths:    validated.BootstrapPaths,
 	}, nil
 }
 
@@ -94,6 +96,8 @@ func (layout *guardLayout) program(ctx context.Context) ([]byte, error) {
 	lines = append(lines, layout.translatedSetDefinitions("inet")...)
 	lines = append(lines, "chain guard_forward { type filter hook forward priority -150; policy accept;",
 		"meta mark set meta mark & "+guardMarkKeep)
+	bootstrap, _ := layout.bootstrapForward("return")
+	lines = append(lines, bootstrap...)
 	lines = append(lines, layout.controllerForwardRules("return", false)...)
 	translated, _ := layout.translatedForward("return", false)
 	lines = append(lines, translated...)
@@ -114,11 +118,14 @@ func (layout *guardLayout) program(ctx context.Context) ([]byte, error) {
 		lines = append(lines, "meta mark & 0xff000000 == "+tag+" drop")
 	}
 	lines = append(lines, layout.controllerTagDrops()...)
+	lines = append(lines, bootstrapTagDrop())
 	translatedDrops, _ := layout.translatedTagDrops()
 	lines = append(lines, translatedDrops...)
 	lines = append(lines, layout.controllerIdentityDrops()...)
 	lines = append(lines, guardClassificationDrops()...)
 	lines = append(lines, "}", "chain permit_flow {")
+	bootstrap, _ = layout.bootstrapForward("accept")
+	lines = append(lines, bootstrap...)
 	lines = append(lines, layout.controllerForwardRules("accept", true)...)
 	translated, _ = layout.translatedForward("accept", true)
 	lines = append(lines, translated...)
@@ -141,6 +148,8 @@ func (layout *guardLayout) program(ctx context.Context) ([]byte, error) {
 			"chain guard_egress_%d { type filter hook egress device %q priority 0; policy accept;",
 			index, name,
 		))
+		bootstrap, _ := layout.bootstrapEgress(name)
+		lines = append(lines, bootstrap...)
 		lines = append(lines, layout.controllerEgressRules(name)...)
 		translated, _ = layout.translatedEgress(name)
 		lines = append(lines, translated...)
@@ -162,6 +171,7 @@ func (layout *guardLayout) program(ctx context.Context) ([]byte, error) {
 		)
 		// Controller tags cannot fall through on the wrong physical egress.
 		lines = append(lines, layout.controllerTagDrops()...)
+		lines = append(lines, bootstrapTagDrop())
 		lines = append(lines, translatedDrops...)
 		lines = append(lines, "}")
 	}

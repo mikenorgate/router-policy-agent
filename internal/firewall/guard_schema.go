@@ -80,6 +80,8 @@ func (layout *guardLayout) schema(family string) (*guardTableSchema, error) {
 		schema.chains["permit_flow"] = map[string]any{"family": family, "table": ownedTable, "name": "permit_flow"}
 		reset := []any{guardMark(guardBinary("&", guardMeta("mark"), numbers[guardMarkKeep]))}
 		schema.rules["guard_forward"] = append([][]any{reset},
+			layout.bootstrapForwardExpressions("return")...)
+		schema.rules["guard_forward"] = append(schema.rules["guard_forward"],
 			layout.controllerForwardExpressions("return", false)...)
 		_, translated := layout.translatedForward("return", false)
 		schema.rules["guard_forward"] = append(schema.rules["guard_forward"], translated...)
@@ -95,11 +97,13 @@ func (layout *guardLayout) schema(family string) (*guardTableSchema, error) {
 			})
 		}
 		schema.rules["guard_confirm"] = append(schema.rules["guard_confirm"], layout.controllerDropExpressions()...)
+		schema.rules["guard_confirm"] = append(schema.rules["guard_confirm"], bootstrapTagDropExpression())
 		_, drops := layout.translatedTagDrops()
 		schema.rules["guard_confirm"] = append(schema.rules["guard_confirm"], drops...)
 		schema.rules["guard_confirm"] = append(schema.rules["guard_confirm"], layout.controllerIdentityExpressions()...)
 		schema.rules["guard_confirm"] = append(schema.rules["guard_confirm"], guardClassificationExpressions()...)
-		schema.rules["permit_flow"] = layout.controllerForwardExpressions("accept", true)
+		schema.rules["permit_flow"] = layout.bootstrapForwardExpressions("accept")
+		schema.rules["permit_flow"] = append(schema.rules["permit_flow"], layout.controllerForwardExpressions("accept", true)...)
 		_, translated = layout.translatedForward("accept", true)
 		schema.rules["permit_flow"] = append(schema.rules["permit_flow"], translated...)
 		schema.rules["permit_flow"] = append(schema.rules["permit_flow"], guardForwardExpressions("accept", numbers)...)
@@ -112,6 +116,8 @@ func (layout *guardLayout) schema(family string) (*guardTableSchema, error) {
 			"type": "filter", "hook": "egress", "prio": 0, "policy": "accept",
 		}
 		rules := make([][]any, 0, len(grantSets)+3)
+		_, bootstrap := layout.bootstrapEgress(device)
+		rules = append(rules, bootstrap...)
 		rules = append(rules, layout.controllerEgressExpressions(device)...)
 		_, translated := layout.translatedEgress(device)
 		rules = append(rules, translated...)
@@ -138,6 +144,7 @@ func (layout *guardLayout) schema(family string) (*guardTableSchema, error) {
 		schema.rules[name] = append(rules,
 			[]any{guardMatch(guardPayload("ether", "daddr"), "@"+cohortSet), map[string]any{"drop": nil}})
 		schema.rules[name] = append(schema.rules[name], layout.controllerDropExpressions()...)
+		schema.rules[name] = append(schema.rules[name], bootstrapTagDropExpression())
 		_, drops := layout.translatedTagDrops()
 		schema.rules[name] = append(schema.rules[name], drops...)
 	}

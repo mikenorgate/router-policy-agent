@@ -28,6 +28,7 @@ type Baseline struct {
 	MaximumDevices       int                   `json:"maximum_devices"`
 	MaximumTuples        int                   `json:"maximum_tuples"`
 	ControllerInitiators []ControllerInitiator `json:"controller_initiators,omitempty"`
+	BootstrapPaths       []BootstrapPath       `json:"bootstrap_paths,omitempty"`
 }
 
 // Zone supplies the reviewed role, VLAN and interface/address geometry.
@@ -65,7 +66,7 @@ func DecodeBaseline(data []byte) (Baseline, error) {
 	required := []string{"schema_version", "generation", "zones", "protected_networks", "protected_endpoints",
 		"retained_blocks", "nat64", "nat46", "nat46_pools", "lease_seconds", "refresh_seconds",
 		"maximum_devices", "maximum_tuples"}
-	if err := strictjson.Object(data, required, []string{"controller_initiators"}, 2*1024*1024); err != nil {
+	if err := strictjson.Object(data, required, []string{"controller_initiators", "bootstrap_paths"}, 2*1024*1024); err != nil {
 		return Baseline{}, err
 	}
 	if err := decodeControllerInitiators(data); err != nil {
@@ -133,7 +134,10 @@ func validateBaseline(b Baseline) error {
 	if err := validateTranslators(b); err != nil {
 		return err
 	}
-	return validateControllerInitiators(b)
+	if err := validateControllerInitiators(b); err != nil {
+		return err
+	}
+	return validateBootstrapPaths(b)
 }
 
 func validateCatalogs(b Baseline) error {
