@@ -95,6 +95,10 @@ func (r *Reader) pages(ctx context.Context, client searcher, unit string, maximu
 		if err := ctx.Err(); err != nil {
 			return nil, readError(ctx)
 		}
+		var controls []ldap.Control
+		if !r.config.Unpaged {
+			controls = []ldap.Control{criticalPage(page)}
+		}
 		request := ldap.NewSearchRequest(
 			"ou="+unit+","+r.config.BaseDN,
 			ldap.ScopeSingleLevel,
@@ -104,7 +108,7 @@ func (r *Reader) pages(ctx context.Context, client searcher, unit string, maximu
 			false,
 			"(objectClass=*)",
 			attributes,
-			[]ldap.Control{criticalPage(page)},
+			controls,
 		)
 		request.EnforceSizeLimit = true
 		response, err := safeSearch(client, request)
@@ -124,6 +128,12 @@ func (r *Reader) pages(ctx context.Context, client searcher, unit string, maximu
 			}
 			seenEntries[dn] = true
 			result = append(result, entry)
+		}
+		if r.config.Unpaged {
+			if len(response.Controls) != 0 {
+				return nil, ErrRead
+			}
+			return result, nil
 		}
 		var returned *ldap.ControlPaging
 		for _, control := range response.Controls {
@@ -244,10 +254,10 @@ func (r *Reader) device(entry *ldap.Entry, groups map[string]groupEntry) (policy
 		return policy.Device{}, false, nil
 	}
 	active, activeOK := single(attributes, "ak-active")
-	if !activeOK || active != "true" && active != "false" {
+	if !activeOK || active != "true" && active != "false" && active != "TRUE" && active != "FALSE" {
 		return policy.Device{}, false, ErrRead
 	}
-	device := policy.Device{ID: id, MAC: mac, Active: active == "true", GroupIDs: []string{}}
+	device := policy.Device{ID: id, MAC: mac, Active: active == "true" || active == "TRUE", GroupIDs: []string{}}
 	memberships := map[string]bool{}
 	for _, raw := range attributes["memberof"] {
 		membership, err := canonicalDN(raw)

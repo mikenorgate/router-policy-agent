@@ -25,7 +25,7 @@ all searches share a deadline of at most ten seconds. Cancellation closes the
 socket and joins LDAP cleanup. Errors expose a fixed collection failure and,
 where applicable, cancellation, not server diagnostics or private endpoints.
 
-The collector performs one-level paged searches below `ou=groups` and
+The collector performs one-level searches below `ou=groups` and
 `ou=users` in one configured provider base. Each group remains an individual
 entry; the collector never uses merged user attributes as group policy. It
 uses Authentik's `uid`, `cn`, object classes, `ak-active`, `member` and
@@ -38,8 +38,15 @@ The collection contract is strict:
   response control. Missing controls, referrals, repeated/oversized cookies,
   duplicate entries or any LDAP error reject the entire collection, including
   entries returned alongside a size-limit error.
+- An explicitly configured `unpaged` mode instead makes one search per
+  namespace, without controls. It retains the same deadline, quota-plus-one
+  search size limit, local quotas, BER bounds and membership checks. Any LDAP
+  error (including size-limit truncation), referral or returned control rejects
+  the whole collection. Missing paging controls never trigger an automatic
+  fallback. Qualify the provider's complete, fresh results before selecting it.
 - Device subjects are accounts whose names parse as canonical Ethernet MACs.
   Other account names are not device subjects. Device status must be exactly
+  `TRUE` or `FALSE` (the LDAP boolean spelling), or the legacy lowercase
   `true` or `false`; inactive devices remain inputs for the compiler's denial.
 - Stable IDs must be unique within their namespace. MAC subjects must be
   unique. Names must match entry DNs in the expected namespace. Duplicate or
@@ -65,7 +72,7 @@ controls reject collection. Entry attribute data is limited to
 Exceeding a limit returns no snapshot rather than a permitted subset.
 
 `ObservedAt` is sampled before credential retrieval and dialing, so the time
-spent collecting consumes authorization lifetime. Successful paging means
+spent collecting consumes authorization lifetime. A successful collection means
 all requested reads finished; it is not an LDAP database transaction or proof
 that no account changed during collection. Membership consistency checks catch
 some concurrent changes, not every concurrent policy edit. Normal bounded
@@ -124,6 +131,10 @@ directory rather than granting the process access to privileged configuration.
 | `base_dn` | The separately authorized provider namespace. |
 | `helper_socket` | Clean absolute request-socket path, at most 107 bytes. Its filesystem ownership and root peer UID are checked before sending. |
 | `custom_ca` | If true, use only the checked `ca.pem` in this directory; otherwise use system roots. |
+
+The optional boolean `unpaged` defaults to false. Set it to true only for a
+qualified provider that returns complete bounded results without paging controls.
+It is deployment configuration, not a directory attribute or automatic fallback.
 
 The file is capped at 16 KiB. Unknown, duplicate, case-variant, missing and null
 fields reject startup. There are no environment overrides or command-line secret,

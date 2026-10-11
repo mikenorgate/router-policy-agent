@@ -258,8 +258,28 @@ func TestGuardInspectionRejectsMissingExtraAndReorderedObjects(t *testing.T) {
 			case "duplicate handle":
 				listing.Objects[3] = bytes.ReplaceAll(listing.Objects[3], []byte(`"handle":2`), []byte(`"handle":1`))
 			case "rule order":
-				last := len(listing.Objects) - 1
-				listing.Objects[last], listing.Objects[last-1] = listing.Objects[last-1], listing.Objects[last]
+				// Ordering matters within a chain, not between independent chains.
+				// Stamp helper chains can each have only one rule.
+				previousChain, previousIndex := "", -1
+				changed := false
+				for index, object := range listing.Objects {
+					var parsed struct{ Rule *struct{ Chain string } }
+					if err := json.Unmarshal(object, &parsed); err != nil {
+						t.Fatal(err)
+					}
+					if parsed.Rule == nil {
+						continue
+					}
+					if parsed.Rule.Chain == previousChain {
+						listing.Objects[index], listing.Objects[previousIndex] = listing.Objects[previousIndex], listing.Objects[index]
+						changed = true
+						break
+					}
+					previousChain, previousIndex = parsed.Rule.Chain, index
+				}
+				if !changed {
+					t.Fatal("rule-order fixture did not change a chain")
+				}
 			case "missing mirror":
 				listings.netdev = bytes.ReplaceAll(listings.netdev,
 					[]byte(`"elem":[{"elem":{"expires":1,"timeout":2,"val":{"concat":`+

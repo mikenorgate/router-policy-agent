@@ -32,6 +32,9 @@ type Config struct {
 	PageSize       uint32
 	MaximumDevices int
 	MaximumGroups  int
+	// Unpaged selects one bounded search per namespace. False requires paging;
+	// there is no automatic fallback when a server omits paging controls.
+	Unpaged bool
 }
 
 // Credentials are obtained again for every collection to support rotation.
