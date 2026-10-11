@@ -309,6 +309,33 @@ func TestReplayAcceptsUTCOriginalTimestampAndIPv6ClaimWithoutQualification(t *te
 	}
 }
 
+func TestReplayBoundsPositiveClockSkewWithoutRenewingEvidence(t *testing.T) {
+	t.Parallel()
+	for _, seconds := range []int64{1, 5, 6} {
+		t.Run(strconv.FormatInt(seconds, 10), func(t *testing.T) {
+			t.Parallel()
+			interim := fixtureEvent("Interim-Update", 60)
+			interim.EventTime = strconv.FormatInt(interim.ReceivedAt+seconds, 10)
+			data := fixtureHistory(t, fixtureEvent("Start", 0), interim)
+			result, err := Replay(data, fixtureScope(), fixtureTime().Add(75*time.Second))
+			if seconds > int64(clockTolerance/time.Second) {
+				if err == nil || len(result.Sessions) != 0 {
+					t.Fatal("accepted timestamp outside the existing clock tolerance")
+				}
+				return
+			}
+			observed := time.Unix(interim.ReceivedAt, 0).UTC()
+			if err != nil || len(result.Sessions) != 1 || result.Sessions[0].ObservedAt != observed || result.Sessions[0].ValidUntil != observed.Add(Freshness) {
+				t.Fatalf("bounded skew rejected or renewed evidence: %v", err)
+			}
+			atExpiry, err := Replay(data, fixtureScope(), observed.Add(Freshness))
+			if err != nil || len(atExpiry.Sessions) != 0 {
+				t.Fatal("clock skew extended the expiry boundary")
+			}
+		})
+	}
+}
+
 func FuzzReplay(f *testing.F) {
 	f.Add(fixtureHistory(f, fixtureEvent("Start", 0), fixtureEvent("Alive", 60)))
 	f.Add([]byte("{}\n"))

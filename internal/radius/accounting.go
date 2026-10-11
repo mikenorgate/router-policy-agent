@@ -256,9 +256,12 @@ func normalize(raw accountingEvent, scope Scope, now time.Time) (event, error) {
 	original := time.Unix(raw.ReceivedAt-int64(delay), 0).UTC() // delay < positive int64 receipt.
 	if raw.EventTime != "" {
 		stamp, err := eventTime(raw.EventTime)
-		if err != nil || stamp.After(time.Unix(raw.ReceivedAt, 0)) || !near(stamp, original) {
+		if err != nil || !near(stamp, original) {
 			return event{}, errors.New("radius: inconsistent event timestamp")
 		}
+		// Both timestamps have second precision and independent clock skew.
+		// Accept only the existing tolerance, but never advance the local
+		// receipt-minus-delay anchor or extend freshness for a future NAS stamp.
 		if stamp.Before(original) {
 			original = stamp
 		}
