@@ -170,7 +170,7 @@ func (p *process) replaceGuarded(
 	if err != nil {
 		return nil, fmt.Errorf("firewall: render application: %w", err)
 	}
-	prepared, err := prepareClassifiedGuards(ctx, logical, history)
+	prepared, err := prepareMappedGuards(ctx, logical, &history, options.profile.layout.translationPaths)
 	if err != nil {
 		return nil, fmt.Errorf("firewall: prepare application mirrors: %w", err)
 	}
@@ -226,7 +226,7 @@ func (p *process) sealGuarded(
 		slices.Sort(*values)
 		*values = slices.Compact(*values)
 	}
-	prepared, err := prepareGuardSeal(ctx, history)
+	prepared, err := prepareMappedGuardSeal(ctx, history, layout.translationPaths)
 	if err != nil {
 		return sealingObservation{}, err
 	}
@@ -326,11 +326,19 @@ func inspectSealingGuards(
 			leaseElements += len(observation.sets[ref.Name].Elements)
 		}
 	}
+	for _, ref := range translatedGrantRefs(layout.translationPaths) {
+		observation := inet
+		if ref.Family == "netdev" {
+			observation = netdev
+		}
+		leaseElements += len(observation.sets[ref.Name].Elements)
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, empty, err
 	}
 	return &guardInventory{
 		cohort: macs, addresses4: addresses4, addresses6: addresses6,
 		managedInterfaces: slices.Clone(layout.managedInterfaces), leases: leaseElements,
+		translationPaths: slices.Clone(layout.translationPaths),
 	}, owned, nil
 }

@@ -11,7 +11,7 @@ Router-side policy compilation for directory-managed devices. One placement grou
 
 **Development status:** the compiler, offline checker, UID-checked local transport, durable revocation state, helper transaction engine and restricted nftables update primitives are implemented. A private guarded backend combines pinned profile inspection, the cooperative writer fence, original authorization deadlines and atomic lease replacement/sealing. A single-use service pairs that backend with the durable engine and IPC, restoring deny-only history before accepting requests and sealing on exit. Isolated kernel tests exercise native IPv4/IPv6 permits, failure revocation and expiry during continuous traffic; a separate fixture tests the service through a real non-root client. The durable revoke-before-update coordinator is also tested. This is not yet a deployable firewall agent. Installed helper activation, directory-source integration, independently qualified bindings, release/pin provenance and independently qualified protected-policy projection, actual owning-writer integration and boot restoration, protected packet-path integration and translation tests remain required. See [the implementation gates](docs/architecture.md#implementation-gates).
 
-A read-only LDAPS collector obtains original Authentik group entries and
+A read-only verified-TLS collector obtains original Authentik group entries and
 direct device memberships with verified certificates, bounded paging and
 redacted failures. Loopback wire tests exercise TLS rejection, partial-result
 rejection, cancellation and credential rotation. The Linux `router-policy-reader`
@@ -44,7 +44,7 @@ The synthetic example produces one TCP/6053 permission from a Trusted controller
 
 `router-policy-reader` is a Linux-only, non-root long-running command. It needs
 `-config-directory` naming its private reader-owned runtime configuration and
-credentials. It connects only over verified LDAPS and submits fresh snapshots
+credentials. It connects over verified LDAPS or mandatory StartTLS and submits fresh snapshots
 to a separately installed root helper; it cannot select enforcement mode, supply
 bindings or modify the protected baseline. Runtime diagnostics are fixed JSON
 outcomes on stderr, without directory dumps or upstream errors. It does not
@@ -75,8 +75,10 @@ permission to restart enforcement. See [recovery scope and failures](docs/runtim
 
 Private helper wiring now loads checked root-owned configuration and supervises
 the separate reader/operator listeners. Both start after closed restoration and
-stop before backend resources are released. No installed helper or real binding
-producer is supplied yet. See [configuration and ownership](docs/runtime-boundary.md#checked-helper-configuration-and-ownership).
+stop before backend resources are released. The collector also has an explicit
+native binding publisher for enrolled, guarded DHCP placement; it never promotes
+shadow reports. Neither command installs its services or packet guards. See
+[configuration and ownership](docs/runtime-boundary.md#checked-helper-configuration-and-ownership).
 
 The helper configuration now requires an explicit `shadow` or `enforce` mode.
 Shadow wiring supplies no firewall callbacks, including startup and shutdown
@@ -90,7 +92,9 @@ Source installation is also available:
 go install github.com/mikenorgate/router-policy-agent/cmd/router-policy-check@latest
 ```
 
-Prebuilt runtime packages will be published after the enforcement gates pass. There are no production packages yet.
+The [runtime package contract](docs/runtime-release.md) describes the matching
+collector, reader and helper artifacts. Packages are inert; their presence does
+not establish installed enforcement or protected-floor qualification.
 
 ## Policy specification
 

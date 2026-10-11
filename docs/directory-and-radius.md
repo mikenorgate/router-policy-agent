@@ -15,10 +15,12 @@ again on each call; it caches neither credentials nor directory entries.
 Concurrent calls use separate connections. A shared credential callback must
 itself be safe for concurrent use and honor its context.
 
-Only explicit `ldaps://host:port` endpoints are accepted. TLS verifies both the
+Only explicit `ldaps://host:port` or `ldap+starttls://host:port` endpoints are accepted. TLS verifies both the
 certificate chain and hostname, using system roots or a cloned deployment CA
 pool, with TLS 1.2 as the minimum. There is no insecure option, plaintext
-fallback, referral following or StartTLS implementation. Connection, bind and
+fallback or referral following. StartTLS sends only the fixed anonymous upgrade
+request before TLS; credentials and searches follow a successful, verified
+handshake. A refused upgrade never falls back to plaintext. Connection, bind and
 all searches share a deadline of at most ten seconds. Cancellation closes the
 socket and joins LDAP cleanup. Errors expose a fixed collection failure and,
 where applicable, cancellation, not server diagnostics or private endpoints.

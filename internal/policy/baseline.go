@@ -14,19 +14,20 @@ import (
 // Baseline is router-owned configuration, never supplied by a directory group.
 // The privileged applier loads its own copy independently of the reader.
 type Baseline struct {
-	SchemaVersion      int             `json:"schema_version"`
-	Generation         string          `json:"generation"`
-	Zones              []Zone          `json:"zones"`
-	ProtectedNetworks  []NetworkBlock  `json:"protected_networks"`
-	ProtectedEndpoints []EndpointBlock `json:"protected_endpoints"`
-	RetainedBlocks     []NetworkBlock  `json:"retained_blocks"`
-	NAT64              []NAT64         `json:"nat64"`
-	NAT46              []NAT46         `json:"nat46"`
-	NAT46Pools         []netip.Prefix  `json:"nat46_pools"`
-	LeaseSeconds       int             `json:"lease_seconds"`
-	RefreshSeconds     int             `json:"refresh_seconds"`
-	MaximumDevices     int             `json:"maximum_devices"`
-	MaximumTuples      int             `json:"maximum_tuples"`
+	SchemaVersion        int                   `json:"schema_version"`
+	Generation           string                `json:"generation"`
+	Zones                []Zone                `json:"zones"`
+	ProtectedNetworks    []NetworkBlock        `json:"protected_networks"`
+	ProtectedEndpoints   []EndpointBlock       `json:"protected_endpoints"`
+	RetainedBlocks       []NetworkBlock        `json:"retained_blocks"`
+	NAT64                []NAT64               `json:"nat64"`
+	NAT46                []NAT46               `json:"nat46"`
+	NAT46Pools           []netip.Prefix        `json:"nat46_pools"`
+	LeaseSeconds         int                   `json:"lease_seconds"`
+	RefreshSeconds       int                   `json:"refresh_seconds"`
+	MaximumDevices       int                   `json:"maximum_devices"`
+	MaximumTuples        int                   `json:"maximum_tuples"`
+	ControllerInitiators []ControllerInitiator `json:"controller_initiators,omitempty"`
 }
 
 // Zone supplies the reviewed role, VLAN and interface/address geometry.
@@ -64,7 +65,10 @@ func DecodeBaseline(data []byte) (Baseline, error) {
 	required := []string{"schema_version", "generation", "zones", "protected_networks", "protected_endpoints",
 		"retained_blocks", "nat64", "nat46", "nat46_pools", "lease_seconds", "refresh_seconds",
 		"maximum_devices", "maximum_tuples"}
-	if err := strictjson.Object(data, required, nil, 2*1024*1024); err != nil {
+	if err := strictjson.Object(data, required, []string{"controller_initiators"}, 2*1024*1024); err != nil {
+		return Baseline{}, err
+	}
+	if err := decodeControllerInitiators(data); err != nil {
 		return Baseline{}, err
 	}
 	var baseline Baseline
@@ -126,7 +130,10 @@ func validateBaseline(b Baseline) error {
 	if err := validateCatalogs(b); err != nil {
 		return err
 	}
-	return validateTranslators(b)
+	if err := validateTranslators(b); err != nil {
+		return err
+	}
+	return validateControllerInitiators(b)
 }
 
 func validateCatalogs(b Baseline) error {

@@ -15,8 +15,9 @@ import (
 // Only the guarded backend admits this schema after complete inspection under
 // the shared writer fence. The raw set-only executor still rejects it.
 type preparedGuardBatch struct {
-	batch          preparedBatch
-	classification *state.Classification
+	batch            preparedBatch
+	classification   *state.Classification
+	translationPaths []deviceTranslationPath
 }
 
 type guardChanges struct {
@@ -40,6 +41,15 @@ func prepareGuardsWithClassification(
 	source *preparedBatch,
 	classification *state.Classification,
 ) (*preparedGuardBatch, error) {
+	return prepareMappedGuards(ctx, source, classification, nil)
+}
+
+func prepareMappedGuards(
+	ctx context.Context,
+	source *preparedBatch,
+	classification *state.Classification,
+	paths []deviceTranslationPath,
+) (*preparedGuardBatch, error) {
 	if ctx == nil || source == nil {
 		return nil, errors.New("firewall: missing guarded transaction or context")
 	}
@@ -57,17 +67,14 @@ func prepareGuardsWithClassification(
 		}
 		owned = &value
 	}
-	data, err := expandGuardBatchWithClassification(ctx, source.data, owned)
+	paths = slices.Clone(paths)
+	data, err := expandMappedGuardBatch(ctx, source.data, owned, paths)
 	if err != nil {
 		return nil, err
 	}
 	prepared := *source
 	prepared.data = data
-	return &preparedGuardBatch{batch: prepared, classification: owned}, nil
-}
-
-func expandGuardBatch(ctx context.Context, source []byte) ([]byte, error) {
-	return expandGuardBatchWithClassification(ctx, source, nil)
+	return &preparedGuardBatch{batch: prepared, classification: owned, translationPaths: paths}, nil
 }
 
 func expandGuardBatchWithClassification(
@@ -229,6 +236,15 @@ func validateGuardBatchWithClassification(
 	data []byte,
 	classification *state.Classification,
 ) error {
+	return validateMappedGuardBatch(ctx, data, classification, nil)
+}
+
+func validateMappedGuardBatch(
+	ctx context.Context,
+	data []byte,
+	classification *state.Classification,
+	paths []deviceTranslationPath,
+) error {
 	if ctx == nil {
 		return errors.New("firewall: missing guard validation context")
 	}
@@ -257,7 +273,7 @@ func validateGuardBatchWithClassification(
 	if err := validateBatch(source); err != nil {
 		return err
 	}
-	expected, err := expandGuardBatchWithClassification(ctx, source, classification)
+	expected, err := expandMappedGuardBatch(ctx, source, classification, paths)
 	if err != nil {
 		return err
 	}
@@ -310,7 +326,7 @@ func decodeGuardChanges(data []byte) (guardChanges, error) {
 	if err := strictjson.Decode(data, &raw, maximumBatch); err != nil {
 		return guardChanges{}, err
 	}
-	if len(raw.Commands) < 3*len(grantSets) || len(raw.Commands) > 6*len(grantSets)+4 {
+	if len(raw.Commands) < 3*len(grantSets) || len(raw.Commands) > 6*len(grantSets)+4+16 {
 		return guardChanges{}, errors.New("firewall: guarded transaction size invalid")
 	}
 	decoded := guardChanges{Commands: make([]change, 0, len(raw.Commands))}

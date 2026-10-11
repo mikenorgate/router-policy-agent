@@ -27,6 +27,14 @@ func prepareClassifiedGuards(
 // inspection and shared writer fencing, not an unchanged external floor.
 // Production use still needs independent protection and boot qualification.
 func prepareGuardSeal(ctx context.Context, classification state.Classification) (*preparedGuardBatch, error) {
+	return prepareMappedGuardSeal(ctx, classification, nil)
+}
+
+func prepareMappedGuardSeal(
+	ctx context.Context,
+	classification state.Classification,
+	paths []deviceTranslationPath,
+) (*preparedGuardBatch, error) {
 	if ctx == nil {
 		return nil, errors.New("firewall: missing sealing context")
 	}
@@ -38,7 +46,7 @@ func prepareGuardSeal(ctx context.Context, classification state.Classification) 
 	if err != nil {
 		return nil, errors.New("firewall: sealing transaction encoding failed")
 	}
-	return prepareClassifiedGuards(ctx, &preparedBatch{data: data}, classification)
+	return prepareMappedGuards(ctx, &preparedBatch{data: data}, &classification, paths)
 }
 
 // classifyGuardChanges requires all leased MAC/address identities to have been
@@ -128,7 +136,7 @@ func validatePreparedGuardBatch(ctx context.Context, prepared *preparedGuardBatc
 	if prepared == nil {
 		return errors.New("firewall: missing prepared guarded transaction")
 	}
-	return validateGuardBatchWithClassification(ctx, prepared.batch.data, prepared.classification)
+	return validateMappedGuardBatch(ctx, prepared.batch.data, prepared.classification, prepared.translationPaths)
 }
 
 // Sealing has no authorization clock and cannot contain any leased addition.

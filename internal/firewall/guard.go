@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"slices"
 	"strings"
 
@@ -30,6 +31,9 @@ const (
 type guardLayout struct {
 	interfaces        []string
 	managedInterfaces []string
+	controllers       []controllerLeg
+	controllerAliases []netip.Addr
+	translationPaths  []deviceTranslationPath
 }
 
 func newGuardLayout(baseline policy.Baseline) (*guardLayout, error) {
@@ -51,9 +55,19 @@ func newGuardLayout(baseline policy.Baseline) (*guardLayout, error) {
 			managed = append(managed, zone.Interfaces...)
 		}
 	}
+	for _, controller := range validated.ControllerInitiators {
+		for _, path := range controller.NAT64Paths {
+			interfaces = append(interfaces, path.Interface)
+		}
+	}
 	slices.Sort(interfaces)
+	interfaces = slices.Compact(interfaces)
 	slices.Sort(managed)
-	return &guardLayout{interfaces: interfaces, managedInterfaces: managed}, nil
+	return &guardLayout{
+		interfaces: interfaces, managedInterfaces: managed, controllers: controllerLegs(validated),
+		controllerAliases: controllerAliasIdentities(validated),
+		translationPaths:  deviceTranslationPaths(validated),
+	}, nil
 }
 
 // program is private image-generation plumbing. No current executable or
@@ -77,9 +91,14 @@ func (layout *guardLayout) program(ctx context.Context) ([]byte, error) {
 			guardSetDefinition(inboundSet(name), "ifname . "+addressType+" . "+addressType+" . inet_service"),
 		)
 	}
+	lines = append(lines, layout.translatedSetDefinitions("inet")...)
 	lines = append(lines, "chain guard_forward { type filter hook forward priority -150; policy accept;",
 		"meta mark set meta mark & "+guardMarkKeep)
+	lines = append(lines, layout.controllerForwardRules("return", false)...)
+	translated, _ := layout.translatedForward("return", false)
+	lines = append(lines, translated...)
 	lines = append(lines, guardLookups("return")...)
+	lines = append(lines, layout.controllerIdentityDrops()...)
 	lines = append(lines, guardClassificationDrops()...)
 	lines = append(lines, "}",
 		// The router's separate table provisionally accepts fixed tags only
@@ -94,8 +113,15 @@ func (layout *guardLayout) program(ctx context.Context) ([]byte, error) {
 		// tag must still deny rather than fall through the accept policy.
 		lines = append(lines, "meta mark & 0xff000000 == "+tag+" drop")
 	}
+	lines = append(lines, layout.controllerTagDrops()...)
+	translatedDrops, _ := layout.translatedTagDrops()
+	lines = append(lines, translatedDrops...)
+	lines = append(lines, layout.controllerIdentityDrops()...)
 	lines = append(lines, guardClassificationDrops()...)
 	lines = append(lines, "}", "chain permit_flow {")
+	lines = append(lines, layout.controllerForwardRules("accept", true)...)
+	translated, _ = layout.translatedForward("accept", true)
+	lines = append(lines, translated...)
 	lines = append(lines, guardLookups("accept")...)
 	lines = append(lines, "}", "}", "table netdev "+ownedTable+" {",
 		fmt.Sprintf("set %s { type ether_addr; size %d; }", cohortSet, maximumCohortSize))
@@ -109,11 +135,15 @@ func (layout *guardLayout) program(ctx context.Context) ([]byte, error) {
 		lines = append(lines, guardSetDefinition(egressSet(name),
 			"ifname . ether_addr . "+addressType+" . "+addressType+" . mark"))
 	}
+	lines = append(lines, layout.translatedSetDefinitions("netdev")...)
 	for index, name := range layout.interfaces {
 		lines = append(lines, fmt.Sprintf(
 			"chain guard_egress_%d { type filter hook egress device %q priority 0; policy accept;",
 			index, name,
 		))
+		lines = append(lines, layout.controllerEgressRules(name)...)
+		translated, _ = layout.translatedEgress(name)
+		lines = append(lines, translated...)
 		for _, set := range grantSets {
 			_, incoming := guardTags(set)
 			family, protocol := guardProtocol(set)
@@ -128,8 +158,12 @@ func (layout *guardLayout) program(ctx context.Context) ([]byte, error) {
 		lines = append(lines,
 			"meta mark & 0xff000000 == "+fromReplyTag+" drop",
 			"meta mark & 0xff000000 == "+toOriginalTag+" drop",
-			"ether daddr @"+cohortSet+" drop", "}",
+			"ether daddr @"+cohortSet+" drop",
 		)
+		// Controller tags cannot fall through on the wrong physical egress.
+		lines = append(lines, layout.controllerTagDrops()...)
+		lines = append(lines, translatedDrops...)
+		lines = append(lines, "}")
 	}
 	lines = append(lines, "}")
 	if err := ctx.Err(); err != nil {

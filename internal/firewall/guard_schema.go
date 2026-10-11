@@ -54,6 +54,20 @@ func (layout *guardLayout) schema(family string) (*guardTableSchema, error) {
 		schema.sets[egressSet(name)] = guardLeaseHeader(family, egressSet(name),
 			[]string{"ifname", "ether_addr", address, address, "mark"})
 	}
+	for _, ref := range translatedGrantRefs(layout.translationPaths) {
+		if ref.Family != family {
+			continue
+		}
+		datatype := []string{"ifname", "ipv6_addr", "ipv6_addr", "inet_service"}
+		if family == "netdev" {
+			address := "ipv6_addr"
+			if ref.Name == "transit_request4_tcp" || ref.Name == "transit_request4_udp" {
+				address = "ipv4_addr"
+			}
+			datatype = []string{"ifname", address, address, "mark"}
+		}
+		schema.sets[ref.Name] = guardLeaseHeader(family, ref.Name, datatype)
+	}
 	if family == "inet" {
 		schema.chains["guard_forward"] = map[string]any{
 			"family": family, "table": ownedTable, "name": "guard_forward",
@@ -66,7 +80,12 @@ func (layout *guardLayout) schema(family string) (*guardTableSchema, error) {
 		schema.chains["permit_flow"] = map[string]any{"family": family, "table": ownedTable, "name": "permit_flow"}
 		reset := []any{guardMark(guardBinary("&", guardMeta("mark"), numbers[guardMarkKeep]))}
 		schema.rules["guard_forward"] = append([][]any{reset},
+			layout.controllerForwardExpressions("return", false)...)
+		_, translated := layout.translatedForward("return", false)
+		schema.rules["guard_forward"] = append(schema.rules["guard_forward"], translated...)
+		schema.rules["guard_forward"] = append(schema.rules["guard_forward"],
 			guardForwardExpressions("return", numbers)...)
+		schema.rules["guard_forward"] = append(schema.rules["guard_forward"], layout.controllerIdentityExpressions()...)
 		schema.rules["guard_forward"] = append(schema.rules["guard_forward"], guardClassificationExpressions()...)
 		schema.rules["guard_confirm"] = [][]any{{map[string]any{"jump": map[string]any{"target": "permit_flow"}}}}
 		for _, tag := range []string{fromOriginalTag, fromReplyTag, toOriginalTag, toReplyTag} {
@@ -75,8 +94,15 @@ func (layout *guardLayout) schema(family string) (*guardTableSchema, error) {
 				map[string]any{"drop": nil},
 			})
 		}
+		schema.rules["guard_confirm"] = append(schema.rules["guard_confirm"], layout.controllerDropExpressions()...)
+		_, drops := layout.translatedTagDrops()
+		schema.rules["guard_confirm"] = append(schema.rules["guard_confirm"], drops...)
+		schema.rules["guard_confirm"] = append(schema.rules["guard_confirm"], layout.controllerIdentityExpressions()...)
 		schema.rules["guard_confirm"] = append(schema.rules["guard_confirm"], guardClassificationExpressions()...)
-		schema.rules["permit_flow"] = guardForwardExpressions("accept", numbers)
+		schema.rules["permit_flow"] = layout.controllerForwardExpressions("accept", true)
+		_, translated = layout.translatedForward("accept", true)
+		schema.rules["permit_flow"] = append(schema.rules["permit_flow"], translated...)
+		schema.rules["permit_flow"] = append(schema.rules["permit_flow"], guardForwardExpressions("accept", numbers)...)
 		return schema, nil
 	}
 	for index, device := range layout.interfaces {
@@ -86,6 +112,9 @@ func (layout *guardLayout) schema(family string) (*guardTableSchema, error) {
 			"type": "filter", "hook": "egress", "prio": 0, "policy": "accept",
 		}
 		rules := make([][]any, 0, len(grantSets)+3)
+		rules = append(rules, layout.controllerEgressExpressions(device)...)
+		_, translated := layout.translatedEgress(device)
+		rules = append(rules, translated...)
 		for _, set := range grantSets {
 			_, incoming := guardTags(set)
 			address, protocol := guardProtocol(set)
@@ -108,6 +137,9 @@ func (layout *guardLayout) schema(family string) (*guardTableSchema, error) {
 		}
 		schema.rules[name] = append(rules,
 			[]any{guardMatch(guardPayload("ether", "daddr"), "@"+cohortSet), map[string]any{"drop": nil}})
+		schema.rules[name] = append(schema.rules[name], layout.controllerDropExpressions()...)
+		_, drops := layout.translatedTagDrops()
+		schema.rules[name] = append(schema.rules[name], drops...)
 	}
 	return schema, nil
 }

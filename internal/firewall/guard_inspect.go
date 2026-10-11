@@ -19,6 +19,7 @@ type guardInventory struct {
 	addresses4        []netip.Addr
 	addresses6        []netip.Addr
 	managedInterfaces []string
+	translationPaths  []deviceTranslationPath
 	leases            int
 }
 
@@ -65,6 +66,7 @@ func (layout *guardLayout) inspect(ctx context.Context, listings guardListings) 
 	inventory := &guardInventory{
 		cohort: cohort, addresses4: addresses4, addresses6: addresses6,
 		managedInterfaces: slices.Clone(layout.managedInterfaces),
+		translationPaths:  slices.Clone(layout.translationPaths),
 	}
 	if err := inventory.checkMirrors(ctx, inet, netdev); err != nil {
 		return nil, err
