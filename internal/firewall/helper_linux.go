@@ -13,7 +13,7 @@ import (
 	"github.com/mikenorgate/router-policy-agent/internal/state"
 )
 
-// RunHelper adopts the two named stream sockets supplied by a root supervisor
+// RunHelper adopts the two enforcement sockets and an optional observation socket from a root supervisor
 // and runs the checked helper. It never installs guards, learns release pins,
 // creates socket paths, initializes history or qualifies the binding producer.
 // Deployment must independently qualify the selected mode and owning writers.
@@ -46,10 +46,15 @@ func RunHelper(ctx context.Context, directory, bindingDirectory string) (result 
 	var observations *net.UnixListener
 	if observationFD != 0 {
 		observations, err = inheritedListener(observationFD)
-		if err != nil {
-			return err
+		// The optional observer cannot prevent enforcement from starting.
+		if err != nil || !configuredListenerMatches(observations, config.ObservationsSocket) {
+			if observations != nil {
+				_ = closeHelperListener(observations)
+			}
+			observations = nil
+		} else {
+			defer func() { result = errors.Join(result, closeHelperListener(observations)) }()
 		}
-		defer func() { result = errors.Join(result, closeHelperListener(observations)) }()
 	}
 	return runConfiguredService(ctx, configuredOptions{
 		directory: directory, requests: requests, status: status, observations: observations,

@@ -63,7 +63,7 @@ func runConfiguredWithClock(
 	if !validRequests || !validStatus {
 		return errors.New("firewall: supervisor listeners differ from helper configuration")
 	}
-	if (options.observations == nil) != (config.ObservationsSocket == "") {
+	if options.observations != nil && config.ObservationsSocket == "" {
 		return errors.New("firewall: observation endpoint differs from trusted configuration")
 	}
 	if options.observations != nil && !configuredListenerMatches(options.observations, config.ObservationsSocket) {
