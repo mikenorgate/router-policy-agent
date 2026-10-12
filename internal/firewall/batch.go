@@ -46,6 +46,8 @@ type tupleKey struct {
 	device        netip.Addr
 	peer          netip.Addr
 	port          uint16
+	peerNetwork   netip.Prefix
+	portEnd       uint16
 }
 
 // validateBatch is a second privilege boundary, not just a JSON syntax check.
@@ -130,16 +132,16 @@ func validateBatch(data []byte) error {
 		if tupleCount > maximumTupleCount {
 			return errors.New("firewall: expanded tuple quota exceeded")
 		}
-		seen := map[tupleKey]bool{}
+		keys := make([]tupleKey, 0, len(values.Values))
 		for _, value := range values.Values {
 			key, err := validateLeasedTuple(value, ipv4Set(ref.Name))
 			if err != nil {
 				return err
 			}
-			if seen[key] {
-				return errors.New("firewall: duplicate leased tuple")
-			}
-			seen[key] = true
+			keys = append(keys, key)
+		}
+		if err := validateDisjointTuples(keys); err != nil {
+			return err
 		}
 	}
 	if len(flushed) != len(grantSets) {
@@ -244,7 +246,7 @@ func validateTuple(value json.RawMessage, ipv4 bool) (tupleKey, error) {
 	if err := strictjson.Decode(value, &tuple, maximumBatch); err != nil || len(tuple.Values) != 5 {
 		return tupleKey{}, errors.New("firewall: exact five-field tuple required")
 	}
-	fields := make([]string, 4)
+	fields := make([]string, 3)
 	for index := range fields {
 		if err := json.Unmarshal(tuple.Values[index], &fields[index]); err != nil {
 			return tupleKey{}, errors.New("firewall: invalid tuple value type")
@@ -257,26 +259,18 @@ func validateTuple(value json.RawMessage, ipv4 bool) (tupleKey, error) {
 	if err != nil || canonical != fields[1] {
 		return tupleKey{}, errors.New("firewall: invalid tuple MAC")
 	}
-	addresses := make([]netip.Addr, 0, 2)
-	for _, rawIP := range fields[2:4] {
-		address, err := netip.ParseAddr(rawIP)
-		if err != nil || address.Is4() != ipv4 || address.String() != rawIP {
-			return tupleKey{}, errors.New("firewall: invalid tuple address family or encoding")
-		}
-		prefix := "/128"
-		if ipv4 {
-			prefix = "/32"
-		}
-		if _, err := policy.ParseHost(rawIP + prefix); err != nil {
-			return tupleKey{}, err
-		}
-		addresses = append(addresses, address)
+	device, err := tupleHost(fields[2], ipv4)
+	if err != nil {
+		return tupleKey{}, err
 	}
-	var port uint16
-	if err := json.Unmarshal(tuple.Values[4], &port); err != nil || port == 0 {
-		return tupleKey{}, errors.New("firewall: exact tuple destination port required")
+	peer, network, err := tuplePeer(tuple.Values[3], ipv4)
+	if err != nil {
+		return tupleKey{}, err
 	}
-	return tupleKey{
-		interfaceName: fields[0], mac: fields[1], device: addresses[0], peer: addresses[1], port: port,
-	}, nil
+	port, last, err := tuplePorts(tuple.Values[4])
+	if err != nil {
+		return tupleKey{}, err
+	}
+	return tupleKey{interfaceName: fields[0], mac: fields[1], device: device,
+		peer: peer, peerNetwork: network, port: port, portEnd: last}, nil
 }

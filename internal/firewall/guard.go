@@ -139,10 +139,10 @@ func (layout *guardLayout) program(ctx context.Context) ([]byte, error) {
 		if ipv4Set(name) {
 			addressType = "ipv4_addr"
 		}
-		// The extracted mark has a 32-bit datatype. Its bounded numeric port
-		// value is the same as the 16-bit forward/conntrack listener value.
+		// Read the listener from the direction-specific packet header. A masked
+		// host-endian mark is not a safe interval concatenation on nftables 1.1.3.
 		lines = append(lines, guardSetDefinition(egressSet(name),
-			"ifname . ether_addr . "+addressType+" . "+addressType+" . mark"))
+			"ifname . ether_addr . "+addressType+" . "+addressType+" . inet_service"))
 	}
 	lines = append(lines, layout.translatedSetDefinitions("netdev")...)
 	for index, name := range layout.interfaces {
@@ -160,8 +160,8 @@ func (layout *guardLayout) program(ctx context.Context) ([]byte, error) {
 			family, protocol := guardProtocol(set)
 			lines = append(lines, fmt.Sprintf(
 				"meta l4proto %s meta mark & 0xff000000 == %s "+
-					"oifname . ether daddr . %s daddr . %s saddr . (meta mark & 0x0000ffff) @%s return",
-				protocol, incoming, family, family, egressSet(set),
+					"oifname . ether daddr . %s daddr . %s saddr . %s %s @%s return",
+				protocol, incoming, family, family, protocol, guardEgressListener(set), egressSet(set),
 			))
 		}
 		// A projected IP permit must not transfer to an unclassified new MAC.
@@ -213,12 +213,19 @@ func permanentGuardSets() []string {
 }
 
 func guardSetDefinition(name, datatype string) string {
-	return fmt.Sprintf("set %s { type %s; flags timeout; timeout 90s; size %d; }",
+	return fmt.Sprintf("set %s { type %s; flags interval,timeout; timeout 90s; size %d; }",
 		name, datatype, maximumTupleCount)
 }
 
 func inboundSet(name string) string { return "inbound_" + name }
 func egressSet(name string) string  { return "egress_" + name }
+
+func guardEgressListener(name string) string {
+	if strings.HasPrefix(name, "lease_from") {
+		return "sport"
+	}
+	return "dport"
+}
 
 func guardProtocol(name string) (string, string) {
 	family, protocol := "ip6", "tcp"

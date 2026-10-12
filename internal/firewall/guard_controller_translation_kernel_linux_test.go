@@ -42,6 +42,10 @@ func TestKernelDeviceTAYGACallbacks(t *testing.T) {
 	runControllerTranslationPackets(t, false, true)
 }
 
+func TestKernelDeviceTAYGAScopedCallbacks(t *testing.T) {
+	runControllerTranslationPackets(t, false, true, true)
+}
+
 func runControllerTranslationPackets(t *testing.T, icmpEnabled bool, callbacks ...bool) {
 	t.Helper()
 	requireKernelIsolation(t)
@@ -307,7 +311,7 @@ map 10.250.0.10 fdca:1a2b::10
 	packetNft(ctx, t, "flush set inet translation_router_fixture protected4")
 	verifyWithdrawnCallbacks := func() {}
 	if len(callbacks) != 0 && callbacks[0] {
-		verifyWithdrawnCallbacks = qualifyTranslatedCallbacks(ctx, t, layout, process, peer, device)
+		verifyWithdrawnCallbacks = qualifyTranslatedCallbacks(ctx, t, layout, process, peer, device, callbacks[1:]...)
 	}
 	qualifyControllerICMP(ctx, t, peer, device, icmpEnabled)
 	qualifyNativeControllerEcho(ctx, t, peer, device, icmpEnabled)

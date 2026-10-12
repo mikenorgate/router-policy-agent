@@ -159,7 +159,7 @@ func expandGuardBatchWithClassification(
 			}
 			// Deduplicate decoded typed values, not their JSON spelling. Escaped
 			// strings or whitespace must not create duplicate kernel projections.
-			projection := []any{tuple.interfaceName, tuple.device.String(), tuple.peer.String(), tuple.port}
+			projection := []any{tuple.interfaceName, tuple.device.String(), tuple.peerValue(), tuple.portValue()}
 			key, err := json.Marshal(projection)
 			if err != nil {
 				return nil, errors.New("firewall: guard projection encoding failed")

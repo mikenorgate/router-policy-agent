@@ -36,7 +36,7 @@ func TestGuardLayoutOwnedGeometryAndCancellation(t *testing.T) {
 			t.Fatalf("fixed guard contract missing %s", fragment)
 		}
 	}
-	if strings.Count(string(program), "flags timeout") != 3*len(grantSets) {
+	if strings.Count(string(program), "flags interval,timeout") != 3*len(grantSets) {
 		t.Fatal("guard did not define every fixed lease mirror")
 	}
 	mask, err := strconv.ParseUint(guardMarkMask, 0, 32)

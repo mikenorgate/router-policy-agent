@@ -127,22 +127,22 @@ func projectTranslatedGrants(
 					return nil, err
 				}
 				isPhysicalLeg := tuple.interfaceName == path.deviceInterface && path.deviceNetwork.Contains(tuple.device)
-				if !path.isReady || !isPhysicalLeg || tuple.peer != path.peer4 {
+				if !path.isReady || !isPhysicalLeg || !tuple.network().Contains(path.peer4) {
 					continue
 				}
 				alias := embedDeviceAddress(path.aliasNetwork, tuple.device)
 				keys := map[objectReference][]any{
 					ownedRef("transit_from6_" + protocol): {
-						path.tunInterface, alias.String(), path.peer6.String(), tuple.port,
+						path.tunInterface, alias.String(), path.peer6.String(), tuple.portValue(),
 					},
 					{Family: "netdev", Table: ownedTable, Name: "transit_request4_" + protocol}: {
-						path.tunInterface, tuple.device.String(), path.peer4.String(), tuple.port,
+						path.tunInterface, tuple.device.String(), path.peer4.String(), tuple.portValue(),
 					},
 					{Family: "netdev", Table: ownedTable, Name: "transit_request6_" + protocol}: {
-						path.peerInterface, alias.String(), path.peer6.String(), tuple.port,
+						path.peerInterface, alias.String(), path.peer6.String(), tuple.portValue(),
 					},
 					{Family: "netdev", Table: ownedTable, Name: "transit_reply6_" + protocol}: {
-						path.tunInterface, alias.String(), path.peer6.String(), tuple.port,
+						path.tunInterface, alias.String(), path.peer6.String(), tuple.portValue(),
 					},
 				}
 				for ref, key := range keys {

@@ -15,6 +15,7 @@ func qualifyTranslatedCallbacks(
 	layout *guardLayout,
 	process *process,
 	peer, device packetEndpoint,
+	scoped ...bool,
 ) func() {
 	t.Helper()
 	replace := func(prepared *preparedGuardBatch) {
@@ -29,7 +30,7 @@ func qualifyTranslatedCallbacks(
 	}
 	apply := func(active bool) {
 		t.Helper()
-		current, logical := translatedDeviceGrantFixture(t, true, active, true)
+		current, logical := translatedDeviceGrantFixture(t, true, active, true, scoped...)
 		prepared, err := prepareMappedGuards(ctx, logical, nil, current.translationPaths)
 		if err != nil {
 			t.Fatal(err)
@@ -55,6 +56,9 @@ func qualifyTranslatedCallbacks(
 	}
 	request := packetDatagram{sourcePort: 49100, destinationPort: 6053, payload: "synthetic-device-callback"}
 	reply := packetDatagram{sourcePort: 6053, destinationPort: 49100, payload: "synthetic-callback-response"}
+	if len(scoped) != 0 && scoped[0] {
+		request.destinationPort, reply.sourcePort = 6055, 6055
+	}
 	apply(true)
 	for _, flow := range []struct {
 		name string
@@ -80,6 +84,9 @@ func qualifyTranslatedCallbacks(
 	// the provisional bridge and controller-address terminal drops.
 	wrong := request
 	wrong.isTCP, wrong.destinationPort, wrong.sourcePort = false, 6054, 49101
+	if len(scoped) != 0 && scoped[0] {
+		wrong.destinationPort = 6056
+	}
 	exchange(wrong, true, false)
 	spoof := packetDatagram{
 		source: netip.MustParseAddr("10.240.3.10"), destination: netip.MustParseAddr("10.250.0.10"),
@@ -104,15 +111,22 @@ func qualifyTranslatedCallbacks(
 		t.Fatal("translated callback bypassed independent protected target denial")
 	}
 	packetNft(ctx, t, "flush set inet translation_router_fixture protected6")
-	// Delete the queried TUN lease between hooks, leaving final mirrors live.
-	// The late check must deny even after a provisional router accept.
+	// Retain a stale early TUN lookup, with the real late lease withdrawn and
+	// final mirrors live. Witness arrival after the provisional router accept.
+	restoreEarly := staleEarlyLeaseFixture(ctx, t, layout, "transit_from6_udp")
+	packetNft(ctx, t, "add counter inet "+ownedTable+" fixture_stale_translated")
 	packetNft(ctx, t, "add chain inet "+ownedTable+" translation_fault { type filter hook forward priority 149; policy accept; }")
 	packetNft(ctx, t, "add rule inet "+ownedTable+" translation_fault "+
 		"meta mark & 0xff000000 == 0xc1000000 udp sport 49104 "+
-		"delete @transit_from6_udp { iifname . ip6 saddr . ip6 daddr . ct original proto-dst }")
+		"counter name fixture_stale_translated")
 	request.sourcePort = 49104
 	exchange(request, true, false)
+	if guardFixtureCounter(ctx, t, ownedTable, "fixture_stale_translated") != 1 {
+		t.Fatal("translated packet did not reach the closed late interval gate with a stale early tag")
+	}
 	packetNft(ctx, t, "delete chain inet "+ownedTable+" translation_fault")
+	packetNft(ctx, t, "delete counter inet "+ownedTable+" fixture_stale_translated")
+	restoreEarly()
 	apply(true)
 	// Final TUN egress also rechecks the physical-leg projection, without
 	// pretending a TUN frame carries the original Ethernet MAC.
@@ -155,7 +169,7 @@ func qualifyTranslatedCallbacks(
 	// Shorten only this disposable fixture's logical leases, before projection.
 	// Actual kernel expiry must stop an existing translated UDP connection in
 	// both directions without a reader refresh or a conntrack flush.
-	current, logical := translatedDeviceGrantFixture(t, true, true, true)
+	current, logical := translatedDeviceGrantFixture(t, true, true, true, scoped...)
 	logical.data = shortGuardFixture(t, logical.data)
 	short, err := prepareMappedGuards(ctx, logical, nil, current.translationPaths)
 	if err != nil {

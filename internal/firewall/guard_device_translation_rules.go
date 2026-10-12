@@ -34,7 +34,7 @@ func (layout *guardLayout) translatedSetDefinitions(family string) []string {
 			if ref.Name == "transit_request4_tcp" || ref.Name == "transit_request4_udp" {
 				address = "ipv4_addr"
 			}
-			datatype = "ifname . " + address + " . " + address + " . mark"
+			datatype = "ifname . " + address + " . " + address + " . inet_service"
 		}
 		lines = append(lines, guardSetDefinition(ref.Name, datatype))
 	}
@@ -114,15 +114,18 @@ func (layout *guardLayout) translatedEgress(device string) ([]string, [][]any) {
 				tag: fromOriginalTag, value: 0xa1000000})
 		}
 		for _, flow := range flows {
+			listener := "dport"
+			if flow.name == "transit_reply6_" {
+				listener = "sport"
+			}
 			lines = append(lines, fmt.Sprintf("meta l4proto %s meta mark & 0xff000000 == %s "+
-				"oifname . %s %s . %s %s . (meta mark & 0x0000ffff) @%s%s return",
-				protocol, flow.tag, flow.family, flow.source, flow.family, flow.target, flow.name, protocol))
+				"oifname . %s %s . %s %s . %s %s @%s%s return",
+				protocol, flow.tag, flow.family, flow.source, flow.family, flow.target, protocol, listener, flow.name, protocol))
 			rules = append(rules, []any{
-				guardMatch(guardMeta("l4proto"), protocol),
 				guardMatch(guardBinary("&", guardMeta("mark"), uint64(0xff000000)), flow.value),
 				guardMatch(map[string]any{"concat": []any{
 					guardMeta("oifname"), guardPayload(flow.family, flow.source), guardPayload(flow.family, flow.target),
-					guardBinary("&", guardMeta("mark"), uint64(0xffff)),
+					guardPayload(protocol, listener),
 				}}, "@"+flow.name+protocol), map[string]any{"return": nil},
 			})
 		}

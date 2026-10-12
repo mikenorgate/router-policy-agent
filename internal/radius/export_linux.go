@@ -181,7 +181,7 @@ func writeExport(ctx context.Context, root *os.Root, filename string, data []byt
 }
 
 func fileDescriptor(file *os.File) (int, error) {
-	if file == nil || file.Fd() > math.MaxInt {
+	if file == nil || file.Fd() > math.MaxInt32 {
 		return 0, errors.New("radius: invalid file descriptor")
 	}
 	return int(file.Fd()), nil

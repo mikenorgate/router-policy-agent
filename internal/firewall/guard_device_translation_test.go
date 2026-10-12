@@ -16,7 +16,7 @@ import (
 
 // The binding is deliberately synthetic. Production must obtain this evidence
 // independently; neither an account attribute nor a saved classifier supplies it.
-func translatedDeviceGrantFixture(t *testing.T, ready, active, hasBinding bool) (*guardLayout, *preparedBatch) {
+func translatedDeviceGrantFixture(t *testing.T, ready, active, hasBinding bool, scoped ...bool) (*guardLayout, *preparedBatch) {
 	t.Helper()
 	_, _, _, input := renderFixture(t)
 	baseline := translatedControllerBaseline(t, ready, false)
@@ -35,6 +35,12 @@ func translatedDeviceGrantFixture(t *testing.T, ready, active, hasBinding bool) 
 			ID: "callback", Direction: policy.FromDevice, Protocol: protocol, DestinationPorts: []uint16{6053},
 			Peer: policy.Peer{Addresses: []string{"fdca:1a2b::10/128"}}, Reason: "Synthetic translated callback",
 		})
+		if len(scoped) != 0 && scoped[0] {
+			raw := strings.Replace(*group.Policy, `"schema_version":1`, `"schema_version":2`, 1)
+			raw = strings.Replace(raw, "fdca:1a2b::10/128", "fdca:1a2b::10/124", 1)
+			raw = strings.Replace(raw, `"destination_ports":[6053]`, `"destination_port_ranges":[{"first":6053,"last":6055}]`, 1)
+			group.Policy = &raw
+		}
 		input.Directory.Groups = append(input.Directory.Groups, group)
 		input.Directory.Devices[0].GroupIDs = append(input.Directory.Devices[0].GroupIDs, group.ID)
 	}
@@ -69,6 +75,46 @@ func translatedDeviceGrantFixture(t *testing.T, ready, active, hasBinding bool) 
 		t.Fatal(err)
 	}
 	return layout, logical
+}
+
+func TestTranslatedScopeMirrorsPreserveListenerIntervals(t *testing.T) {
+	t.Parallel()
+	for _, ready := range []bool{false, true} {
+		t.Run(map[bool]string{false: "mapping unavailable", true: "installed mapping"}[ready], func(t *testing.T) {
+			t.Parallel()
+			layout, logical := translatedDeviceGrantFixture(t, ready, true, true, true)
+			prepared, err := prepareMappedGuards(t.Context(), logical, nil, layout.translationPaths)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := validatePreparedGuardBatch(t.Context(), prepared); err != nil {
+				t.Fatal(err)
+			}
+			changes, err := decodeGuardChanges(prepared.batch.data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			count := 0
+			for _, command := range changes.Commands {
+				if command.Add == nil || !strings.HasPrefix(command.Add.Element.Name, "transit_") {
+					continue
+				}
+				for _, value := range command.Add.Element.Values {
+					if !bytes.Contains(value, []byte(`"range":[6053,6055]`)) || bytes.Contains(value, []byte(`"prefix"`)) {
+						t.Fatalf("translation widened the exact mapped peer or lost the listener interval: %s", value)
+					}
+					count++
+				}
+			}
+			want := 0
+			if ready {
+				want = 8
+			}
+			if count != want {
+				t.Fatalf("got %d translated scope mirrors, want %d", count, want)
+			}
+		})
+	}
 }
 
 func TestTranslatedDeviceMirrors(t *testing.T) {

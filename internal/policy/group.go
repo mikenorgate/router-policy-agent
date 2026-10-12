@@ -14,7 +14,8 @@ import (
 	"github.com/mikenorgate/router-policy-agent/internal/strictjson"
 )
 
-// Attribute is the group-only directory attribute carrying version-one policy.
+// Attribute is the group-only directory attribute. Document versions are checked
+// independently; older agents reject versions they cannot enforce.
 const Attribute = "network_policy_v1"
 
 // AttributeLimit is the maximum group-policy JSON size in bytes.
@@ -63,20 +64,31 @@ type Document struct {
 	Rules         []Rule `json:"rules,omitempty"`
 }
 
-// Peer contains exact hosts. DNS expansion and subnet peers are not supported.
+// Peer selects real hosts/networks, configured zones, or public Internet space.
+// Exactly one selector is permitted. Version one supports exact Addresses only.
 type Peer struct {
-	Addresses []string `json:"addresses"`
+	Addresses []string `json:"addresses,omitempty"`
+	Zones     []Role   `json:"zones,omitempty"`
+	Internet  bool     `json:"internet,omitempty"`
+}
+
+// PortRange is an inclusive TCP/UDP destination-port interval, never port zero.
+type PortRange struct {
+	First uint16 `json:"first"`
+	Last  uint16 `json:"last"`
 }
 
 // Rule defines one logical permit whose NAT variants retain scope and expiry.
 type Rule struct {
-	ID               string     `json:"id"`
-	Direction        Direction  `json:"direction"`
-	Peer             Peer       `json:"peer"`
-	Protocol         string     `json:"protocol"`
-	DestinationPorts []uint16   `json:"destination_ports"`
-	Reason           string     `json:"reason"`
-	ExpiresAt        *time.Time `json:"expires_at,omitempty"`
+	ID                    string      `json:"id"`
+	Direction             Direction   `json:"direction"`
+	Peer                  Peer        `json:"peer"`
+	Protocol              string      `json:"protocol"`
+	DestinationPorts      []uint16    `json:"destination_ports,omitempty"`
+	DestinationPortRanges []PortRange `json:"destination_port_ranges,omitempty"`
+	AllDestinationPorts   bool        `json:"all_destination_ports,omitempty"`
+	Reason                string      `json:"reason"`
+	ExpiresAt             *time.Time  `json:"expires_at,omitempty"`
 }
 
 // ParseGroup validates the entire exact schema before interpreting a policy.
@@ -105,7 +117,7 @@ func ParseGroup(raw string) (Document, error) {
 	if err := strictjson.Decode(data, &document, AttributeLimit); err != nil {
 		return Document{}, err
 	}
-	if document.SchemaVersion != 1 || !validRole(document.VLANRole) {
+	if (document.SchemaVersion != 1 && document.SchemaVersion != 2) || !validRole(document.VLANRole) {
 		return Document{}, errors.New("policy: unsupported schema or role")
 	}
 	if kind == "placement" {
@@ -123,7 +135,7 @@ func ParseGroup(raw string) (Document, error) {
 	}
 	seen := map[string]bool{}
 	for index, rule := range document.Rules {
-		if err := validateRule(rule, rawRules[index], document.Temporary); err != nil {
+		if err := validateRule(rule, rawRules[index], document.Temporary, document.SchemaVersion); err != nil {
 			return Document{}, err
 		}
 		if seen[rule.ID] {
@@ -134,19 +146,22 @@ func ParseGroup(raw string) (Document, error) {
 	return document, nil
 }
 
-func validateRule(rule Rule, raw json.RawMessage, isTemporary bool) error {
-	required := []string{"id", "direction", "peer", "protocol", "destination_ports", "reason"}
+func validateRule(rule Rule, raw json.RawMessage, isTemporary bool, version int) error {
+	required := []string{"id", "direction", "peer", "protocol", "reason"}
+	var optional []string
+	if version == 1 {
+		required = append(required, "destination_ports")
+	} else {
+		optional = []string{"destination_ports", "destination_port_ranges", "all_destination_ports"}
+	}
 	if isTemporary {
 		required = append(required, "expires_at")
 	}
-	if err := strictjson.Object(raw, required, nil, AttributeLimit); err != nil {
+	if err := strictjson.Object(raw, required, optional, AttributeLimit); err != nil {
 		return err
 	}
 	object := map[string]json.RawMessage{}
 	if err := strictjson.Decode(raw, &object, AttributeLimit); err != nil {
-		return err
-	}
-	if err := strictjson.Object(object["peer"], []string{"addresses"}, nil, AttributeLimit); err != nil {
 		return err
 	}
 	if !identifier.MatchString(rule.ID) || !validText(rule.Reason, 512) {
@@ -157,6 +172,18 @@ func validateRule(rule Rule, raw json.RawMessage, isTemporary bool) error {
 	}
 	if rule.Protocol != "tcp" && rule.Protocol != "udp" {
 		return errors.New("policy: unsupported protocol")
+	}
+	if version == 2 {
+		if err := validateScopePeer(rule.Peer, object["peer"]); err != nil {
+			return err
+		}
+		if err := validatePortSelection(rule, object); err != nil {
+			return err
+		}
+		return validateRuleExpiry(rule, object, isTemporary)
+	}
+	if err := strictjson.Object(object["peer"], []string{"addresses"}, nil, AttributeLimit); err != nil {
+		return err
 	}
 	if len(rule.Peer.Addresses) == 0 || len(rule.Peer.Addresses) > 8 {
 		return errors.New("policy: peer count outside bounds")
@@ -182,6 +209,10 @@ func validateRule(rule Rule, raw json.RawMessage, isTemporary bool) error {
 		}
 		seenPorts[port] = true
 	}
+	return validateRuleExpiry(rule, object, isTemporary)
+}
+
+func validateRuleExpiry(rule Rule, object map[string]json.RawMessage, isTemporary bool) error {
 	if isTemporary {
 		var timestamp string
 		if err := json.Unmarshal(object["expires_at"], &timestamp); err != nil {

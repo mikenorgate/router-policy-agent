@@ -181,8 +181,8 @@ func TestGuardInspectionRejectsSchemaRuleAndLeaseDrift(t *testing.T) {
 		{name: "unknown protocol", old: `"right":"tcp"`, replacement: `"right":"icmp"`},
 		{name: "lease datatype", old: `"inet_service"`, replacement: `"mark"`},
 		{name: "lease bounds", old: `"timeout":90`, replacement: `"timeout":91`},
-		{name: "traffic refreshed lease", old: `"flags":["timeout"]`,
-			replacement: `"flags":["timeout","dynamic"]`},
+		{name: "traffic refreshed lease", old: `"flags":["interval","timeout"]`,
+			replacement: `"flags":["interval","timeout","dynamic"]`},
 		{name: "cohort expiry", old: `"size":4096`, replacement: `"size":4096,"timeout":90`},
 		{name: "cohort mismatch", netdev: true, old: `"elem":["02:00:00:00:00:01"]`, replacement: `"elem":[]`},
 		{name: "unclassified address", old: `"elem":["fdca:1a2b:3::10"]`, replacement: `"elem":[]`},
@@ -200,7 +200,7 @@ func TestGuardInspectionRejectsSchemaRuleAndLeaseDrift(t *testing.T) {
 		{name: "null lease expiry", old: `"expires":1`, replacement: `"expires":null`},
 		{name: "unreserved egress device", netdev: true, old: `"dev":"lan13"`, replacement: `"dev":"other"`},
 		{name: "late egress hook", netdev: true, old: `"prio":0`, replacement: `"prio":1`},
-		{name: "wrong mark datatype", netdev: true, old: `"mark"]`, replacement: `"inet_service"]`},
+		{name: "wrong listener datatype", netdev: true, old: `"inet_service"]`, replacement: `"mark"]`},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {

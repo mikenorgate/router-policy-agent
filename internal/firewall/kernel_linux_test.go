@@ -272,7 +272,7 @@ func setupKernelObjects(ctx context.Context, t *testing.T) {
 		commands = append(commands, map[string]any{"add": map[string]any{"set": map[string]any{
 			"family": "inet", "table": ownedTable, "name": name, "size": 16384,
 			"type":  []string{"ifname", "ether_addr", addressType, addressType, "inet_service"},
-			"flags": []string{"timeout"}, "timeout": 90,
+			"flags": []string{"interval", "timeout"}, "timeout": 90,
 		}}})
 	}
 	data, err := json.Marshal(map[string]any{"nftables": commands})

@@ -52,7 +52,7 @@ func (layout *guardLayout) schema(family string) (*guardTableSchema, error) {
 			continue
 		}
 		schema.sets[egressSet(name)] = guardLeaseHeader(family, egressSet(name),
-			[]string{"ifname", "ether_addr", address, address, "mark"})
+			[]string{"ifname", "ether_addr", address, address, "inet_service"})
 	}
 	for _, ref := range translatedGrantRefs(layout.translationPaths) {
 		if ref.Family != family {
@@ -64,7 +64,7 @@ func (layout *guardLayout) schema(family string) (*guardTableSchema, error) {
 			if ref.Name == "transit_request4_tcp" || ref.Name == "transit_request4_udp" {
 				address = "ipv4_addr"
 			}
-			datatype = []string{"ifname", address, address, "mark"}
+			datatype = []string{"ifname", address, address, "inet_service"}
 		}
 		schema.sets[ref.Name] = guardLeaseHeader(family, ref.Name, datatype)
 	}
@@ -128,10 +128,11 @@ func (layout *guardLayout) schema(family string) (*guardTableSchema, error) {
 			key := map[string]any{"concat": []any{
 				guardMeta("oifname"), guardPayload("ether", "daddr"),
 				guardPayload(address, "daddr"), guardPayload(address, "saddr"),
-				guardBinary("&", guardMeta("mark"), uint64(0x0000ffff)),
+				guardPayload(protocol, guardEgressListener(set)),
 			}}
 			rules = append(rules, []any{
-				guardMatch(guardMeta("l4proto"), protocol),
+				// nft canonicalizes the explicit protocol dependency into the
+				// typed transport-payload lookup in this netdev rule.
 				guardMatch(guardBinary("&", guardMeta("mark"), uint64(0xff000000)), numbers[incoming]),
 				guardMatch(key, "@"+egressSet(set)), map[string]any{"return": nil},
 			})
@@ -207,7 +208,7 @@ func guardSetHeader(family, name string, datatype any, size int) map[string]any 
 
 func guardLeaseHeader(family, name string, datatypes []string) map[string]any {
 	header := guardSetHeader(family, name, datatypes, maximumTupleCount)
-	header["flags"], header["timeout"] = []string{"timeout"}, 90
+	header["flags"], header["timeout"] = []string{"interval", "timeout"}, 90
 	return header
 }
 
