@@ -19,10 +19,11 @@ import (
 // The supervisor supplies both already-created listeners. Bindings must come
 // from an independently qualified producer; a fixture/config file is not one.
 type configuredOptions struct {
-	directory string
-	bindings  func(context.Context) (binding.Snapshot, error)
-	requests  *net.UnixListener
-	status    *net.UnixListener
+	directory     string
+	bindingSource string
+	bindings      func(context.Context) (binding.Snapshot, error)
+	requests      *net.UnixListener
+	status        *net.UnixListener
 }
 
 // runConfiguredService owns opened resources for the entire joined service
@@ -48,6 +49,12 @@ func runConfiguredWithClock(
 	config, err := loadHelperConfig(ctx, options.directory)
 	if err != nil {
 		return err
+	}
+	// RunHelper selects the loader from the first private configuration read.
+	// A replacement between reads must not promote shadow evidence into an
+	// enforcing engine or silently change the selected binding source.
+	if options.bindingSource != config.BindingSource {
+		return errors.New("firewall: helper binding source changed during startup")
 	}
 	validRequests := configuredListenerMatches(options.requests, config.RequestSocket)
 	validStatus := configuredListenerMatches(options.status, config.StatusSocket)

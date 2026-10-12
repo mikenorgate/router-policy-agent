@@ -90,7 +90,7 @@ func verifySetInventory(ctx context.Context, data []byte) (*setInventory, error)
 			}
 			continue
 		}
-		seenTuples := map[tupleKey]bool{}
+		setKeys := make([]tupleKey, 0, len(set.Elements))
 		for _, rawElement := range set.Elements {
 			if err := ctx.Err(); err != nil {
 				return nil, err
@@ -99,14 +99,14 @@ func verifySetInventory(ctx context.Context, data []byte) (*setInventory, error)
 			if err != nil {
 				return nil, err
 			}
-			if seenTuples[key] {
-				return nil, errors.New("firewall: duplicate listed lease tuple")
-			}
-			seenTuples[key] = true
+			setKeys = append(setKeys, key)
 			keys = append(keys, key)
 			if len(keys) > maximumTupleCount {
 				return nil, errors.New("firewall: listed tuple quota exceeded")
 			}
+		}
+		if err := validateDisjointTuples(setKeys); err != nil {
+			return nil, err
 		}
 	}
 	if !seenNames[cohortSet] {
@@ -244,7 +244,7 @@ func decodeListedSet(raw json.RawMessage) (listedSet, error) {
 		!slices.Equal(datatypes, []string{"ifname", "ether_addr", addressType, addressType, "inet_service"}) {
 		return set, errors.New("firewall: lease tuple datatype differs")
 	}
-	validTimeout := slices.Equal(set.Flags, []string{"timeout"}) && set.Timeout == 90
+	validTimeout := slices.Equal(set.Flags, []string{"interval", "timeout"}) && set.Timeout == 90
 	validCapacity := set.Size == maximumTupleCount && len(set.Elements) <= maximumTupleCount
 	if !validTimeout || !validCapacity {
 		return set, errors.New("firewall: lease set bounds or flags differ")

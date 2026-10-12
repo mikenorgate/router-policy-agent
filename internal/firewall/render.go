@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/netip"
 	"slices"
 	"time"
 
@@ -102,14 +103,21 @@ func (renderer *renderer) prepare(ctx context.Context, input replacement) (*prep
 			return nil, err
 		}
 		compatible := false
+		peers := grantPeerNetworks(grant)
 		for _, device := range grant.Device.Variants {
-			for _, peer := range grant.Peer.Variants {
-				if device.Is4() != peer.Is4() {
+			for _, peer := range peers {
+				if device.Is4() != peer.Addr().Is4() {
 					continue
 				}
 				compatible = true
 				key := tupleKey{
-					interfaceName: grant.Interface, mac: grant.MAC, device: device, peer: peer, port: grant.Port,
+					interfaceName: grant.Interface, mac: grant.MAC, device: device, peer: peer.Addr(), port: grant.Port,
+				}
+				if peer.Bits() < peer.Addr().BitLen() {
+					key.peerNetwork = peer
+				}
+				if grant.PortEnd > grant.Port {
+					key.portEnd = grant.PortEnd
 				}
 				name := grantSet(grant.Direction, grant.Protocol, device.Is4())
 				tuples[name][key] = max(tuples[name][key], remaining)
@@ -173,6 +181,17 @@ func (renderer *renderer) prepare(ctx context.Context, input replacement) (*prep
 	}, nil
 }
 
+func grantPeerNetworks(grant policy.Grant) []netip.Prefix {
+	if grant.PeerScope != nil {
+		return grant.PeerScope.Variants
+	}
+	peers := make([]netip.Prefix, 0, len(grant.Peer.Variants))
+	for _, peer := range grant.Peer.Variants {
+		peers = append(peers, netip.PrefixFrom(peer, peer.BitLen()))
+	}
+	return peers
+}
+
 func (renderer *renderer) cohort(input replacement) (map[string]bool, []string, error) {
 	known, combined := map[string]bool{}, map[string]bool{}
 	for index, identities := range [][]string{input.existingCohort, input.cohort} {
@@ -233,7 +252,7 @@ func renderTuple(key tupleKey, remaining time.Duration) (json.RawMessage, error)
 	// Mixed types are confined to nftables' ordered JSON tuple boundary.
 	data, err := json.Marshal(map[string]any{"elem": map[string]any{
 		"timeout": timeout, "val": map[string]any{"concat": []any{
-			key.interfaceName, key.mac, key.device.String(), key.peer.String(), key.port,
+			key.interfaceName, key.mac, key.device.String(), key.peerValue(), key.portValue(),
 		}},
 	}})
 	if err != nil {
@@ -248,6 +267,8 @@ func compareTuple(left, right tupleKey) int {
 		cmp.Compare(left.mac, right.mac),
 		left.device.Compare(right.device),
 		left.peer.Compare(right.peer),
+		cmp.Compare(left.network().Bits(), right.network().Bits()),
 		cmp.Compare(left.port, right.port),
+		cmp.Compare(left.lastPort(), right.lastPort()),
 	)
 }

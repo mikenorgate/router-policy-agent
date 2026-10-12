@@ -26,6 +26,9 @@ func TestDecodeConfigRejectsAmbiguousAndUnsafeSettings(t *testing.T) {
 	if parsed, err := decodeConfig([]byte(syntheticConfig)); err != nil || parsed.CustomCA {
 		t.Fatal("valid private configuration rejected")
 	}
+	if parsed, err := decodeConfig([]byte(strings.TrimSuffix(syntheticConfig, "}") + `,"unpaged":true}`)); err != nil || !parsed.Unpaged {
+		t.Fatal("explicit bounded unpaged mode rejected")
+	}
 	for _, test := range []struct{ name, data string }{
 		{name: "unsupported schema", data: strings.Replace(syntheticConfig, `"schema_version":1`, `"schema_version":2`, 1)},
 		{name: "duplicate field", data: strings.Replace(syntheticConfig, `"schema_version":1`, `"schema_version":1,"schema_version":1`, 1)},
@@ -38,6 +41,9 @@ func TestDecodeConfigRejectsAmbiguousAndUnsafeSettings(t *testing.T) {
 		{name: "control character socket", data: strings.Replace(syntheticConfig, `/run/router-policy-agent/requests.sock`, `/run/\nrequests.sock`, 1)},
 		{name: "oversize socket", data: strings.Replace(syntheticConfig, `/run/router-policy-agent/requests.sock`, `/`+strings.Repeat("a", 107), 1)},
 		{name: "oversize document", data: strings.Repeat(" ", maximumConfig) + syntheticConfig},
+		{name: "null unpaged", data: strings.TrimSuffix(syntheticConfig, "}") + `,"unpaged":null}`},
+		{name: "string unpaged", data: strings.TrimSuffix(syntheticConfig, "}") + `,"unpaged":"true"}`},
+		{name: "case variant unpaged", data: strings.TrimSuffix(syntheticConfig, "}") + `,"Unpaged":true}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()

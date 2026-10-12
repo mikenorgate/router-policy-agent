@@ -32,13 +32,13 @@ func listingFixtureObjects() []map[string]any {
 		objects = append(objects, map[string]any{"set": map[string]any{
 			"family": "inet", "table": ownedTable, "name": name, "handle": index + 2,
 			"type": []string{"ifname", "ether_addr", addressType, addressType, "inet_service"},
-			"size": 16384, "flags": []string{"timeout"}, "timeout": 90,
+			"size": 16384, "flags": []string{"interval", "timeout"}, "timeout": 90,
 		}})
 	}
 	objects[len(objects)-2]["set"] = map[string]any{
 		"family": "inet", "table": ownedTable, "name": "lease_to6_tcp", "handle": 8,
 		"type": []string{"ifname", "ether_addr", "ipv6_addr", "ipv6_addr", "inet_service"},
-		"size": 16384, "flags": []string{"timeout"}, "timeout": 90,
+		"size": 16384, "flags": []string{"interval", "timeout"}, "timeout": 90,
 		"elem": []any{map[string]any{"elem": map[string]any{
 			"val": map[string]any{"concat": []any{
 				"lan13", "02:00:00:00:00:01", "fdca:1a2b:3::10", "fdca:1a2b::10", 6053,
@@ -131,8 +131,9 @@ func TestInventoryRejectsSchemaDriftAndInvalidLeases(t *testing.T) {
 		{name: "wrong address datatype", old: `"ipv6_addr"`, new: `"ipv4_addr"`},
 		{name: "lease capacity", old: `"size":16384`, new: `"size":1`},
 		{name: "default timeout", old: `"timeout":90`, new: `"timeout":91`},
-		{name: "missing timeout flag", old: `"flags":["timeout"]`, new: `"flags":[]`},
-		{name: "traffic refreshed timeout", old: `"flags":["timeout"]`, new: `"flags":["timeout","dynamic"]`},
+		{name: "missing timeout flag", old: `"flags":["interval","timeout"]`, new: `"flags":["interval"]`},
+		{name: "legacy non-interval header", old: `"flags":["interval","timeout"]`, new: `"flags":["timeout"]`},
+		{name: "traffic refreshed timeout", old: `"flags":["interval","timeout"]`, new: `"flags":["interval","timeout","dynamic"]`},
 		{name: "unknown set policy", old: `"size":16384`, new: `"size":16384,"policy":"memory"`},
 		{name: "unbounded element", old: `"timeout":85`, new: `"timeout":90`},
 		{name: "negative element expiry", old: `"expires":84`, new: `"expires":-1`},

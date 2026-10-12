@@ -99,9 +99,12 @@ delete table netdev writer_endpoint_fixture; delete table inet writer_unrelated_
 					if pending.Ready || pending.Sequence != previous.Sequence+1 {
 						return errors.New("synthetic owner update lacks closed coordination state")
 					}
-					// Existing traffic must already be cut off before the owner is
-					// permitted to change an alias or protected forwarding path.
-					checkTraffic(bounded, false)
+					// Inject the existing flow while readiness is closed, before
+					// the owner update. Both packet taps are already armed; observe
+					// absence after releasing the fence so passive receive windows
+					// do not consume the owning operation's two-second budget.
+					sendPacket(bounded, t, peer, request)
+					sendPacket(bounded, t, device, reply)
 					assertClassifiedGuardInventory(bounded, t, process, layout, history, false)
 					return nil
 				},
@@ -120,6 +123,10 @@ delete table netdev writer_endpoint_fixture; delete table inet writer_unrelated_
 				t.Fatal(err)
 			}
 			previous = ready
+			// Inspect packets injected before the update over the unchanged full
+			// receive windows. Any leaked packet remains queued on its tap.
+			receivePacket(ctx, t, device, request, false)
+			receivePacket(ctx, t, peer, reply, false)
 			// Publishing readiness is not permission or restoration of old leases.
 			checkTraffic(ctx, false)
 			assertClassifiedGuardInventory(ctx, t, process, layout, history, false)

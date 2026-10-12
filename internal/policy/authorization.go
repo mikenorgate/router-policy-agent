@@ -91,6 +91,11 @@ func (authorization Authorization) Snapshot(ctx context.Context) (Candidate, err
 		grant := &owned.Grants[index]
 		grant.Device.Variants = slices.Clone(grant.Device.Variants)
 		grant.Peer.Variants = slices.Clone(grant.Peer.Variants)
+		if grant.PeerScope != nil {
+			scope := *grant.PeerScope
+			scope.Variants = slices.Clone(scope.Variants)
+			grant.PeerScope = &scope
+		}
 		grant.Contributors = slices.Clone(grant.Contributors)
 	}
 	if err := ctx.Err(); err != nil {

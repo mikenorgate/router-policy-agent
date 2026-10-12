@@ -38,9 +38,6 @@ jobs:
           make vet
       - name: Race and shuffled tests including Linux IPC
         run: go test -race -shuffle=on -count=1 -tags integration -coverprofile=coverage.out ./...
-      - name: Core coverage floor
-        run: |
-          go tool cover -func=coverage.out | awk '/total:/ { sub(/%/, "", $3); if ($3 < 80) exit 1 }'
       - name: Fuzz properties
         if: matrix.go == 'stable'
         run: make fuzz
@@ -66,7 +63,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Qualify actual kernel expiry and atomic owned updates
+      - name: Qualify kernel expiry, atomic updates and full core coverage
         run: ROUTER_POLICY_REQUIRE_HEADER_TEST=1 make kernel
       - name: Qualify non-root IPC through the actual guarded native backend
         run: make kernel-service

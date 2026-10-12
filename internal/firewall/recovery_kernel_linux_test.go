@@ -386,7 +386,7 @@ func blockedRecoveryFixture(
 		}
 	}()
 	fd := lock.Fd()
-	if fd > math.MaxInt {
+	if fd > math.MaxInt32 {
 		t.Fatal("invalid fixture lock descriptor")
 	}
 	if err := syscall.Flock(int(fd), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {

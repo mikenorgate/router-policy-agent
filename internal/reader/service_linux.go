@@ -73,6 +73,7 @@ func loadReader(ctx context.Context, root *os.Root, owner uint32) (*directory.Re
 	options := directory.Config{
 		URL: configuration.DirectoryURL, BaseDN: configuration.BaseDN,
 		Timeout: cycleTimeout, PageSize: 256, MaximumDevices: 4096, MaximumGroups: 8192,
+		Unpaged: configuration.Unpaged,
 	}
 	if configuration.CustomCA {
 		options.RootCAs, err = readCA(ctx, root, owner)

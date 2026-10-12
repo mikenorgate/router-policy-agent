@@ -36,7 +36,7 @@ func (compiler *Compiler) CheckCandidate(ctx context.Context, candidate Candidat
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := compiler.checkGrant(grant, candidate.CompiledAt); err != nil {
+		if err := compiler.checkGrant(ctx, grant, candidate.CompiledAt); err != nil {
 			return err
 		}
 	}
@@ -46,7 +46,7 @@ func (compiler *Compiler) CheckCandidate(ctx context.Context, candidate Candidat
 	return ctx.Err()
 }
 
-func (compiler *Compiler) checkGrant(grant Grant, compiledAt time.Time) error {
+func (compiler *Compiler) checkGrant(ctx context.Context, grant Grant, compiledAt time.Time) error {
 	canonical, err := CanonicalMAC(grant.MAC)
 	validIdentity := err == nil && canonical == grant.MAC && identifier.MatchString(grant.DeviceID)
 	validProtocol := grant.Protocol == "tcp" || grant.Protocol == "udp"
@@ -57,18 +57,29 @@ func (compiler *Compiler) checkGrant(grant Grant, compiledAt time.Time) error {
 	if !compiler.grantGeometry(grant) {
 		return errors.New("policy: candidate grant differs from untrusted geometry")
 	}
-	for _, endpoint := range []Endpoint{grant.Device, grant.Peer} {
+	endpoints := []Endpoint{grant.Device}
+	if grant.PeerScope == nil {
+		if grant.PortEnd != 0 {
+			return errors.New("policy: exact grant has interval fields")
+		}
+		endpoints = append(endpoints, grant.Peer)
+	} else if err := compiler.checkScopeGrant(ctx, grant); err != nil {
+		return err
+	}
+	for _, endpoint := range endpoints {
 		expected, err := resolveEndpoint(compiler.baseline, endpoint.Real)
 		if err != nil || expected.Real != endpoint.Real || !slices.Equal(expected.Variants, endpoint.Variants) {
 			return errors.New("policy: candidate counterpart set differs")
 		}
 	}
-	flow := floorFlow{
-		mac: grant.MAC, placement: Untrusted, device: grant.Device.Real, peer: grant.Peer.Real, port: grant.Port,
-		rule: Rule{Direction: grant.Direction, Protocol: grant.Protocol},
-	}
-	if code := compiler.floor(flow); code != "" {
-		return errors.New("policy: candidate violates protected floor")
+	if grant.PeerScope == nil {
+		flow := floorFlow{
+			mac: grant.MAC, placement: Untrusted, device: grant.Device.Real, peer: grant.Peer.Real, port: grant.Port,
+			rule: Rule{Direction: grant.Direction, Protocol: grant.Protocol},
+		}
+		if code := compiler.floor(flow); code != "" {
+			return errors.New("policy: candidate violates protected floor")
+		}
 	}
 	// Up to sixteen groups with thirty-two rules may overlap one logical flow.
 	if len(grant.Contributors) == 0 || len(grant.Contributors) > 16*32 {
@@ -81,6 +92,29 @@ func (compiler *Compiler) checkGrant(grant Grant, compiledAt time.Time) error {
 		if !validIdentity || !validDeadline {
 			return errors.New("policy: candidate contributor identity or deadline invalid")
 		}
+	}
+	return nil
+}
+
+func (compiler *Compiler) checkScopeGrant(ctx context.Context, grant Grant) error {
+	scope := grant.PeerScope
+	if grant.Peer.Real.IsValid() || len(grant.Peer.Variants) != 0 || grant.PortEnd < grant.Port ||
+		!scope.Real.IsValid() || scope.Real != scope.Real.Masked() || scope.Real.Bits() == 0 {
+		return errors.New("policy: invalid scoped grant geometry")
+	}
+	expected := compiler.resolveScope(scope.Real)
+	if !slices.Equal(expected.Variants, scope.Variants) {
+		return errors.New("policy: scoped candidate counterpart set differs")
+	}
+	regions, err := compiler.clipScope(ctx, scope.Real,
+		PortRange{First: grant.Port, Last: grant.PortEnd}, grant.MAC, grant.Device.Real,
+		Rule{Direction: grant.Direction, Protocol: grant.Protocol})
+	if err != nil {
+		return err
+	}
+	if len(regions) != 1 || regions[0].network != scope.Real ||
+		regions[0].ports.First != grant.Port || regions[0].ports.Last != grant.PortEnd {
+		return errors.New("policy: scoped candidate violates protected floor")
 	}
 	return nil
 }

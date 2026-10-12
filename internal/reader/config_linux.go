@@ -27,11 +27,12 @@ type config struct {
 	BaseDN        string `json:"base_dn"`
 	HelperSocket  string `json:"helper_socket"`
 	CustomCA      bool   `json:"custom_ca"`
+	Unpaged       bool   `json:"unpaged"`
 }
 
 func decodeConfig(data []byte) (config, error) {
 	keys := []string{"schema_version", "directory_url", "base_dn", "helper_socket", "custom_ca"}
-	if err := strictjson.Object(data, keys, nil, maximumConfig); err != nil {
+	if err := strictjson.Object(data, keys, []string{"unpaged"}, maximumConfig); err != nil {
 		return config{}, errRuntime
 	}
 	var parsed config

@@ -65,6 +65,12 @@ table inet guard_router_fixture {
  counter fixture_protected_drop {}
  counter fixture_bridge_accept {}
  counter fixture_stateful_accept {}
+ counter fixture_mark_corruption {}
+ chain fixture_mark {
+  type filter hook forward priority -200; policy accept;
+  meta nfproto ipv4 meta mark set 0x00ff0000
+  meta nfproto ipv6 meta mark set 0x005a0000
+ }
  chain fixture_stateful {
   ct state established counter name fixture_stateful_accept accept
  }
@@ -73,6 +79,8 @@ table inet guard_router_fixture {
  }
  chain fixture_application {
   type filter hook forward priority 0; policy drop;
+  meta nfproto ipv4 meta mark & 0x00ff0000 != 0x00ff0000 counter name fixture_mark_corruption drop
+  meta nfproto ipv6 meta mark & 0x00ff0000 != 0x005a0000 counter name fixture_mark_corruption drop
   meta l4proto { tcp, udp } ip saddr . ct original proto-dst @protected4 counter name fixture_protected_drop drop
   meta l4proto { tcp, udp } ip daddr . ct original proto-dst @protected4 counter name fixture_protected_drop drop
   meta l4proto { tcp, udp } ip6 saddr . ct original proto-dst @protected6 counter name fixture_protected_drop drop
@@ -130,6 +138,9 @@ table inet guard_router_fixture {
 			}
 			if guardFixtureCounter(ctx, t, "guard_router_fixture", "fixture_bridge_accept") != bridgeBefore+4 {
 				t.Fatal("all four leased direction tags did not traverse the separate router bridge")
+			}
+			if guardFixtureCounter(ctx, t, "guard_router_fixture", "fixture_mark_corruption") != 0 {
+				t.Fatal("listener stamping overwrote mark bits reserved for the router")
 			}
 			packetNft(ctx, t, "add rule inet guard_router_fixture fixture_stateful "+
 				"ct state established counter name fixture_stateful_accept accept")
@@ -271,16 +282,15 @@ table inet guard_recheck_fixture {
 					t.Fatal("changed tuple did not encounter a closed late leased guard")
 				}
 			})
-			t.Run("lease withdrawn between hooks is rechecked in every direction", func(t *testing.T) {
+			t.Run("stale early interval leases are rechecked in every direction", func(t *testing.T) {
 				applyGuardFixture(ctx, t, guardPacketBatch(t, deviceIP, peerIP, true))
 				address, suffix := "ip6", "6_udp"
 				if deviceIP.Is4() {
 					address, suffix = "ip", "4_udp"
 				}
-				// Deliberately remove only the queried physical lease after the
-				// early check. Final mirrors remain live: an egress check cannot
-				// substitute for the late guard. These are test-only fault rules,
-				// not production packet-controlled mutation or lease renewal.
+				staleEarlyLeaseFixture(ctx, t, layout,
+					"lease_from"+suffix, "inbound_lease_from"+suffix,
+					"lease_to"+suffix, "inbound_lease_to"+suffix)
 				withdraw := []string{
 					"add counter inet router_policy_agent fixture_withdrawal",
 					"add chain inet router_policy_agent fixture_withdrawal { type filter hook forward priority 100; policy accept; }",
@@ -297,13 +307,11 @@ table inet guard_recheck_fixture {
 						"add counter inet router_policy_agent "+sourceCounter,
 						"add counter inet router_policy_agent "+targetCounter,
 						"add rule inet router_policy_agent fixture_withdrawal meta l4proto udp ct direction "+sourceDirection+" "+
-							"iifname . ether saddr . "+address+" saddr . "+address+" daddr . ct original proto-dst @"+name+
-							" counter name fixture_withdrawal counter name "+sourceCounter+" delete @"+name+" { "+
-							"iifname . ether saddr . "+address+" saddr . "+address+" daddr . ct original proto-dst }",
+							"iifname . ether saddr . "+address+" saddr . "+address+" daddr . ct original proto-dst @fixture_early_"+name+
+							" counter name fixture_withdrawal counter name "+sourceCounter,
 						"add rule inet router_policy_agent fixture_withdrawal meta l4proto udp ct direction "+targetDirection+" "+
-							"oifname . "+address+" daddr . "+address+" saddr . ct original proto-dst @inbound_"+name+
-							" counter name fixture_withdrawal counter name "+targetCounter+" delete @inbound_"+name+" { "+
-							"oifname . "+address+" daddr . "+address+" saddr . ct original proto-dst }",
+							"oifname . "+address+" daddr . "+address+" saddr . ct original proto-dst @fixture_early_inbound_"+name+
+							" counter name fixture_withdrawal counter name "+targetCounter,
 					)
 				}
 				packetNft(ctx, t, strings.Join(withdraw, "\n")+`
@@ -350,7 +358,7 @@ table inet guard_recheck_fixture {
 					"fixture_from_original", "fixture_from_reply", "fixture_to_original", "fixture_to_reply",
 				} {
 					if guardFixtureCounter(ctx, t, ownedTable, counter) != 1 {
-						t.Fatal("between-hook withdrawal did not exercise each initiation and correlated reply independently")
+						t.Fatal("stale early lookup did not exercise each initiation and correlated reply independently")
 					}
 				}
 			})

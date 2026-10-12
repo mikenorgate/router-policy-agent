@@ -76,7 +76,7 @@ func TestBatchAuthority(t *testing.T) {
 		{name: "subnet", raw: strings.ReplaceAll(valid, "fdca:1a2b::10", "fdca:1a2b::/64")},
 		{name: "unknown protocol", raw: strings.ReplaceAll(valid, `_tcp`, `_icmpv6`)},
 		{name: "zero port", raw: strings.ReplaceAll(valid, "6053", "0")},
-		{name: "range", raw: strings.ReplaceAll(valid, "6053", `{"range":[1,65535]}`)},
+		{name: "zero in range", raw: strings.ReplaceAll(valid, "6053", `{"range":[0,65535]}`)},
 		{name: "verdict", raw: strings.ReplaceAll(valid, `"lan13"`, `{"accept":null}`)},
 	}
 	for _, test := range cases {

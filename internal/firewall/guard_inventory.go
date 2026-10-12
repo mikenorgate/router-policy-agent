@@ -41,7 +41,7 @@ func (inventory *guardInventory) checkMirrors(
 	if err := inventory.checkInterfaces(ctx, logical.Commands); err != nil {
 		return err
 	}
-	expanded, err := expandGuardBatch(ctx, source)
+	expanded, err := expandMappedGuardBatch(ctx, source, nil, inventory.translationPaths)
 	if err != nil {
 		return err
 	}
@@ -69,6 +69,20 @@ func (inventory *guardInventory) checkMirrors(
 			if err := sameGuardElements(ctx, actual, wanted[ref]); err != nil {
 				return err
 			}
+		}
+	}
+	for _, ref := range translatedGrantRefs(inventory.translationPaths) {
+		observation := inet
+		if ref.Family == "netdev" {
+			observation = netdev
+		}
+		actual, err := listedGuardLeases(ctx, observation.sets[ref.Name].Elements)
+		if err != nil {
+			return err
+		}
+		inventory.leases += len(actual)
+		if err := sameGuardElements(ctx, actual, wanted[ref]); err != nil {
+			return err
 		}
 	}
 	return inventory.checkAddressAdditions(ctx, wanted, false)
@@ -167,6 +181,9 @@ func (inventory *guardInventory) checkPreparedReplacement(ctx context.Context, p
 	if prepared == nil {
 		return errors.New("firewall: missing prepared guarded replacement")
 	}
+	if inventory == nil || !slices.Equal(inventory.translationPaths, prepared.translationPaths) {
+		return errors.New("firewall: translated preparation differs from inspected root geometry")
+	}
 	return inventory.checkGuardReplacement(ctx, prepared.batch.data, prepared.classification)
 }
 
@@ -181,7 +198,7 @@ func (inventory *guardInventory) checkGuardReplacement(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := validateGuardBatchWithClassification(ctx, data, classification); err != nil {
+	if err := validateMappedGuardBatch(ctx, data, classification, inventory.translationPaths); err != nil {
 		return err
 	}
 	guarded, err := decodeGuardChanges(data)

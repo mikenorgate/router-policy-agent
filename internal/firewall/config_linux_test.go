@@ -101,6 +101,8 @@ func TestHelperConfigRejectsUnsafeResourceGeometry(t *testing.T) {
 		{name: "missing mode", change: func(c *helperConfig) { c.Mode = "" }},
 		{name: "unknown mode", change: func(c *helperConfig) { c.Mode = "apply" }},
 		{name: "case variant mode", change: func(c *helperConfig) { c.Mode = "Shadow" }},
+		{name: "shadow source enforcement", change: func(c *helperConfig) { c.BindingSource = radiusShadowSource }},
+		{name: "unknown binding source", change: func(c *helperConfig) { c.Mode = agent.Shadow; c.BindingSource = "unknown" }},
 		{name: "root reader", change: func(c *helperConfig) { c.ReaderUID = 0 }},
 		{name: "root operator", change: func(c *helperConfig) { c.OperatorUID = 0 }},
 		{name: "same identity", change: func(c *helperConfig) { c.OperatorUID = c.ReaderUID }},
@@ -145,6 +147,16 @@ func TestHelperConfigRejectsUnsafeResourceGeometry(t *testing.T) {
 	config.Mode = agent.Shadow
 	if got, err := decodeHelperConfig(t.Context(), helperConfigBytes(t, config)); err != nil || got.Mode != agent.Shadow {
 		t.Fatal("explicit shadow configuration was rejected or changed to enforcement")
+	}
+}
+
+func TestHelperConfigShadowSourceRequiresExplicitShadowMode(t *testing.T) {
+	t.Parallel()
+	config := helperConfigFixture()
+	config.Mode, config.BindingSource = agent.Shadow, radiusShadowSource
+	got, err := decodeHelperConfig(t.Context(), helperConfigBytes(t, config))
+	if err != nil || got != config {
+		t.Fatal("explicit shadow input configuration rejected", err)
 	}
 }
 

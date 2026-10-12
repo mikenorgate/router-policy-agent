@@ -1,9 +1,10 @@
 # Local transport and durable state
 
 These packages implement the helper boundary, not an installed firewall service.
-The reader command submits fresh directory data to a checked root-helper socket;
-no current command starts the helper or directly updates nftables. The private guarded
-backend is exercised in isolated test fixtures, not an installed service. The
+The reader command submits fresh directory data to a checked root-helper socket.
+The helper command adopts supervisor-created sockets and an explicit root-owned
+mode; no installed service or production configuration is supplied. The guarded
+backend is exercised in isolated test fixtures. The
 remaining runtime and packet tests are listed in [the activation gates](architecture.md#implementation-gates).
 
 ## Socket contract
@@ -592,7 +593,8 @@ restored classification denies both initiation directions before a legacy
 permit, while a never-classified address on that same MAC remains unaffected.
 These fixtures do not prove translated packet correlation, storage-to-boot
 traffic ordering or the production protected floor. The private guarded backend
-uses these transactions; no current command can activate them.
+uses these transactions. The configured helper can select enforcement only
+through separately qualified root-owned deployment configuration.
 
 ### Owned guard inspection
 
@@ -666,7 +668,7 @@ generation, external floor drift and expiry during continuous traffic. Existing
 flows stop before the stateful shortcut; external drift is left untouched.
 The fixture's bridge is not the production protected-policy projection. Actual
 writer cooperation, authenticated collectors, boot ordering, UTC/suspend and
-translator identity remain unqualified, and executable wiring is still absent.
+translator identity remain unqualified; executable wiring does not qualify them.
 
 ## Checked helper configuration and ownership
 
@@ -676,7 +678,7 @@ hard link, and use mode `0400` or `0600`; symlinks, FIFOs and unsafe metadata
 reject. Its schema is strict, including nested objects, required fields, nulls
 and duplicate keys. Nothing is learned from a live listing or an adjacent file.
 
-All configuration fields are required:
+The following configuration fields are required:
 
 | Field | Contract |
 | --- | --- |
@@ -691,6 +693,10 @@ All configuration fields are required:
 | `request_timeout_ms` | Integer from `1` through `10000`; no default or timeout extension |
 | `request_socket`, `status_socket` | Distinct clean absolute Unix-stream paths, each at most 107 bytes |
 
+The optional `binding_source` field accepts `radius_shadow` only with
+`mode: shadow`. Omit it to use the normal `bindings.json` loader. Unknown
+sources and a shadow source in enforcement mode reject.
+
 Private resource directories cannot overlap one another or contain either
 socket. Paths cannot contain control characters. File ownership does not
 authenticate an owning release or prove storage encryption; deployment must
@@ -702,7 +708,7 @@ state lock without executing commands, sampling time, reading bindings or
 initializing state.
 Partial failure closes previously opened resources. Configuration contains no
 clock override, state-reset option, binding fixture, firewall program or hook
-selection. A separate qualified binding producer remains mandatory.
+selection. Enforcement requires a separately qualified binding producer.
 
 The root-owned mode is fixed for the service lifetime. Reader requests cannot
 select or change it. In `shadow`, the engine has no firewall callbacks: startup,
@@ -737,7 +743,40 @@ The lower-level test assembler supplies a controlled clock projection; these
 packet tests neither change nor depend on the host's synchronization state.
 These fixtures do not qualify real bindings, release/pin provenance, encrypted
 storage, boot ordering, synchronized time or translated forwarding. No installed
-helper executable or production configuration is supplied yet.
+helper service or production configuration is supplied yet.
+
+### Helper command and shadow input
+
+`router-policy-helper -config-directory PATH -binding-directory PATH` runs the
+root-only configured helper. It requires `LISTEN_PID` to match its PID,
+`LISTEN_FDS=2` and two activated Unix-stream sockets named `requests` and
+`status` in `LISTEN_FDNAMES`. Their paths must match the checked configuration.
+The supervisor owns socket creation and permissions; the helper never unlinks
+their paths. No CLI flag changes the configured mode, clock or policy pin.
+
+First installation uses the separate
+`router-policy-helper -config-directory PATH -initialize-state` operation,
+without a binding directory. It refuses existing or corrupt history and never
+creates guards, generation records or release pins. Runtime does not initialize
+missing history.
+
+The default source reads fixed `bindings.json` from the private root-owned
+binding directory on each transaction. The normal binding loader still rejects
+collector reports, even if renamed. Explicit `mode: shadow` with
+`binding_source: radius_shadow` instead reads fixed `radius-shadow.json`.
+It requires a complete, fresh, placement-checked report and correlates each
+proposal with its original RADIUS session and DHCP lease. It preserves original
+observation times and deadlines; rereading unchanged bytes cannot renew them.
+The report must retain the exact JSON encoding written by the collector.
+The helper checks source selection again during startup and rejects a change
+between reads before opening runtime resources.
+
+Missing, incomplete, expired or unsafe reports reject. A complete empty report
+is valid withdrawal evidence. The adapter never publishes `bindings.json` and
+cannot be selected in enforcement mode. Tests cover frozen-report expiry without
+a Stop, withdrawal, recovery, unsafe files and startup source changes. These
+tests do not qualify installed integration or an authoritative producer.
+See [helper packaging and deployment responsibilities](helper-release.md).
 
 ## Denial-only recovery
 

@@ -253,6 +253,9 @@ type packetDatagram struct {
 	sourcePort, destinationPort uint16
 	payload                     string
 	isTCP                       bool
+	isICMP                      bool
+	icmpType, icmpCode          byte
+	icmpData                    uint32
 	tcpFlags                    byte
 	sequence, acknowledgment    uint32
 }
@@ -266,6 +269,15 @@ func packetFrame(t *testing.T, datagram packetDatagram) []byte {
 	if datagram.isTCP {
 		transportHeader, transportProtocol = 20, 6
 	}
+	if datagram.isICMP {
+		if datagram.isTCP {
+			t.Fatal("synthetic packet cannot be TCP and ICMP")
+		}
+		transportHeader, transportProtocol = 8, 1
+		if datagram.source.Is6() {
+			transportProtocol = 58
+		}
+	}
 	transport := make([]byte, transportHeader+len(datagram.payload))
 	binary.BigEndian.PutUint16(transport[0:2], datagram.sourcePort)
 	binary.BigEndian.PutUint16(transport[2:4], datagram.destinationPort)
@@ -275,13 +287,18 @@ func packetFrame(t *testing.T, datagram packetDatagram) []byte {
 	}
 	length := uint16(len(transport) & 0xffff)
 	checksumOffset := 6
-	if datagram.isTCP {
+	switch {
+	case datagram.isICMP:
+		transport[0], transport[1] = datagram.icmpType, datagram.icmpCode
+		binary.BigEndian.PutUint32(transport[4:8], datagram.icmpData)
+		checksumOffset = 2
+	case datagram.isTCP:
 		binary.BigEndian.PutUint32(transport[4:8], datagram.sequence)
 		binary.BigEndian.PutUint32(transport[8:12], datagram.acknowledgment)
 		transport[12], transport[13] = 0x50, datagram.tcpFlags
 		binary.BigEndian.PutUint16(transport[14:16], 4096)
 		checksumOffset = 16
-	} else {
+	default:
 		binary.BigEndian.PutUint16(transport[4:6], length)
 	}
 	copy(transport[transportHeader:], datagram.payload)
@@ -312,7 +329,12 @@ func packetFrame(t *testing.T, datagram packetDatagram) []byte {
 		binary.BigEndian.PutUint32(pseudo[32:36], uint32(length))
 		pseudo[39] = transportProtocol
 	}
-	checksum := packetChecksum(append(pseudo, transport...))
+	checksumInput := transport
+	if !datagram.isICMP || !datagram.source.Is4() {
+		pseudo = append(pseudo, transport...)
+		checksumInput = pseudo
+	}
+	checksum := packetChecksum(checksumInput)
 	if checksum == 0 {
 		checksum = 0xffff
 	}
@@ -389,8 +411,15 @@ func sendPacket(ctx context.Context, t *testing.T, endpoint packetEndpoint, fram
 	}
 }
 
-func receivePacket(ctx context.Context, t *testing.T, endpoint packetEndpoint, sent []byte, expected bool) {
+func receivePacket(ctx context.Context, t *testing.T, endpoint packetEndpoint, sent []byte, expected bool, hops ...byte) {
 	t.Helper()
+	expectedHop := byte(63)
+	if len(hops) > 1 {
+		t.Fatal("packet fixture accepts at most one expected hop limit")
+	}
+	if len(hops) == 1 {
+		expectedHop = hops[0]
+	}
 	deadline := time.Now().Add(300 * time.Millisecond)
 	if expected {
 		deadline = time.Now().Add(time.Second)
@@ -428,7 +457,7 @@ func receivePacket(ctx context.Context, t *testing.T, endpoint packetEndpoint, s
 		}
 		correctMAC := bytes.Equal(buffer[:6], endpoint.mac)
 		correctAddresses := bytes.Equal(buffer[addressStart:header], sent[addressStart:header])
-		correctHop := buffer[hop] == 63
+		correctHop := buffer[hop] == expectedHop
 		if !correctMAC || !correctAddresses || !correctHop {
 			t.Fatal("received frame did not retain its routed IP identity and final destination MAC")
 		}

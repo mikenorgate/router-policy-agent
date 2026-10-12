@@ -60,8 +60,10 @@ type Grant struct {
 	Direction    Direction     `json:"direction"`
 	Device       Endpoint      `json:"device"`
 	Peer         Endpoint      `json:"peer"`
+	PeerScope    *PeerScope    `json:"peer_scope,omitempty"`
 	Protocol     string        `json:"protocol"`
 	Port         uint16        `json:"port"`
+	PortEnd      uint16        `json:"port_end,omitempty"`
 	Contributors []Contributor `json:"contributors"`
 }
 
@@ -97,6 +99,8 @@ type Candidate struct {
 type Compiler struct {
 	baseline Baseline
 	hash     string
+	internet []netip.Prefix
+	global4  []netip.Prefix
 }
 
 // New validates and copies configuration so the caller cannot mutate the floor.
@@ -122,7 +126,13 @@ func New(baseline Baseline) (*Compiler, error) {
 		return nil, errors.New("policy: baseline digest failed")
 	}
 	hash := sha256.Sum256(data)
-	return &Compiler{baseline: owned, hash: hex.EncodeToString(hash[:])}, nil
+	compiler := &Compiler{baseline: owned, hash: hex.EncodeToString(hash[:])}
+	compiler.global4 = compiler.publicIPv4Networks()
+	compiler.internet, err = compiler.calculateInternetNetworks()
+	if err != nil {
+		return nil, err
+	}
+	return compiler, nil
 }
 
 // Input deliberately includes raw group policies rather than caller-generated
@@ -324,6 +334,18 @@ func (compiler *Compiler) compileDevice(ctx context.Context, device Device, grou
 			if !input.Now.Before(expires) {
 				continue
 			}
+			if document.SchemaVersion == 2 {
+				scoped, code := compiler.compileScopeRule(ctx, device, record, group.ID, rule, expires, input, edits)
+				if code != "" {
+					return nil, code
+				}
+				grants = append(grants, scoped...)
+				tupleCount += expandedTuples(scoped)
+				if tupleCount > compiler.baseline.MaximumTuples {
+					return nil, "device_quota_exceeded"
+				}
+				continue
+			}
 			for _, rawPeer := range rule.Peer.Addresses {
 				if ctx.Err() != nil {
 					return nil, "compilation_canceled"
@@ -374,7 +396,11 @@ func (compiler *Compiler) compileDevice(ctx context.Context, device Device, grou
 			}
 		}
 	}
-	return mergeGrants(grants), ""
+	normalized, err := compiler.normalizeScopeUnion(ctx, grants)
+	if err != nil {
+		return nil, "device_quota_exceeded"
+	}
+	return normalized, ""
 }
 
 func selectGroups(device Device, groups map[string]Group) (Role, []Group, string) {
@@ -458,6 +484,15 @@ func expandedTuples(grants []Grant) int {
 				peer6++
 			}
 		}
+		if grant.PeerScope != nil {
+			for _, peer := range grant.PeerScope.Variants {
+				if peer.Addr().Is4() {
+					peer4++
+				} else {
+					peer6++
+				}
+			}
+		}
 		count += device4*peer4 + device6*peer6
 		// Only comparisons against the hard quota need the result. Saturation
 		// bounds arithmetic and avoids walking a Cartesian product of aliases.
@@ -502,6 +537,10 @@ func mergeGrants(grants []Grant) []Grant {
 }
 
 func grantKey(grant Grant) string {
-	return strings.Join([]string{grant.DeviceID, grant.Device.Real.String(), grant.Peer.Real.String(),
-		string(grant.Direction), grant.Protocol, strconv.Itoa(int(grant.Port))}, "/")
+	peer := grant.Peer.Real.String()
+	if grant.PeerScope != nil {
+		peer = grant.PeerScope.Real.String()
+	}
+	return strings.Join([]string{grant.DeviceID, grant.Device.Real.String(), peer,
+		string(grant.Direction), grant.Protocol, strconv.Itoa(int(grant.Port)), strconv.Itoa(int(grant.PortEnd))}, "/")
 }

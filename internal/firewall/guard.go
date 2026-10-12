@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"slices"
 	"strings"
 
@@ -30,6 +31,10 @@ const (
 type guardLayout struct {
 	interfaces        []string
 	managedInterfaces []string
+	controllers       []controllerLeg
+	controllerAliases []netip.Addr
+	translationPaths  []deviceTranslationPath
+	bootstrapPaths    []policy.BootstrapPath
 }
 
 func newGuardLayout(baseline policy.Baseline) (*guardLayout, error) {
@@ -51,9 +56,20 @@ func newGuardLayout(baseline policy.Baseline) (*guardLayout, error) {
 			managed = append(managed, zone.Interfaces...)
 		}
 	}
+	for _, controller := range validated.ControllerInitiators {
+		for _, path := range controller.NAT64Paths {
+			interfaces = append(interfaces, path.Interface)
+		}
+	}
 	slices.Sort(interfaces)
+	interfaces = slices.Compact(interfaces)
 	slices.Sort(managed)
-	return &guardLayout{interfaces: interfaces, managedInterfaces: managed}, nil
+	return &guardLayout{
+		interfaces: interfaces, managedInterfaces: managed, controllers: controllerLegs(validated),
+		controllerAliases: controllerAliasIdentities(validated),
+		translationPaths:  deviceTranslationPaths(validated),
+		bootstrapPaths:    validated.BootstrapPaths,
+	}, nil
 }
 
 // program is private image-generation plumbing. No current executable or
@@ -77,9 +93,16 @@ func (layout *guardLayout) program(ctx context.Context) ([]byte, error) {
 			guardSetDefinition(inboundSet(name), "ifname . "+addressType+" . "+addressType+" . inet_service"),
 		)
 	}
+	lines = append(lines, layout.translatedSetDefinitions("inet")...)
 	lines = append(lines, "chain guard_forward { type filter hook forward priority -150; policy accept;",
 		"meta mark set meta mark & "+guardMarkKeep)
+	bootstrap, _ := layout.bootstrapForward("return")
+	lines = append(lines, bootstrap...)
+	lines = append(lines, layout.controllerForwardRules("return", false)...)
+	translated, _ := layout.translatedForward("return", false)
+	lines = append(lines, translated...)
 	lines = append(lines, guardLookups("return")...)
+	lines = append(lines, layout.controllerIdentityDrops()...)
 	lines = append(lines, guardClassificationDrops()...)
 	lines = append(lines, "}",
 		// The router's separate table provisionally accepts fixed tags only
@@ -94,33 +117,51 @@ func (layout *guardLayout) program(ctx context.Context) ([]byte, error) {
 		// tag must still deny rather than fall through the accept policy.
 		lines = append(lines, "meta mark & 0xff000000 == "+tag+" drop")
 	}
+	lines = append(lines, layout.controllerTagDrops()...)
+	lines = append(lines, bootstrapTagDrop())
+	translatedDrops, _ := layout.translatedTagDrops()
+	lines = append(lines, translatedDrops...)
+	lines = append(lines, layout.controllerIdentityDrops()...)
 	lines = append(lines, guardClassificationDrops()...)
 	lines = append(lines, "}", "chain permit_flow {")
+	bootstrap, _ = layout.bootstrapForward("accept")
+	lines = append(lines, bootstrap...)
+	lines = append(lines, layout.controllerForwardRules("accept", true)...)
+	translated, _ = layout.translatedForward("accept", true)
+	lines = append(lines, translated...)
 	lines = append(lines, guardLookups("accept")...)
-	lines = append(lines, "}", "}", "table netdev "+ownedTable+" {",
+	lines = append(lines, "}")
+	lines = append(lines, guardStampProgram()...)
+	lines = append(lines, "}", "table netdev "+ownedTable+" {",
 		fmt.Sprintf("set %s { type ether_addr; size %d; }", cohortSet, maximumCohortSize))
 	for _, name := range grantSets {
 		addressType := "ipv6_addr"
 		if ipv4Set(name) {
 			addressType = "ipv4_addr"
 		}
-		// The extracted mark has a 32-bit datatype. Its bounded numeric port
-		// value is the same as the 16-bit forward/conntrack listener value.
+		// Read the listener from the direction-specific packet header. A masked
+		// host-endian mark is not a safe interval concatenation on nftables 1.1.3.
 		lines = append(lines, guardSetDefinition(egressSet(name),
-			"ifname . ether_addr . "+addressType+" . "+addressType+" . mark"))
+			"ifname . ether_addr . "+addressType+" . "+addressType+" . inet_service"))
 	}
+	lines = append(lines, layout.translatedSetDefinitions("netdev")...)
 	for index, name := range layout.interfaces {
 		lines = append(lines, fmt.Sprintf(
 			"chain guard_egress_%d { type filter hook egress device %q priority 0; policy accept;",
 			index, name,
 		))
+		bootstrap, _ := layout.bootstrapEgress(name)
+		lines = append(lines, bootstrap...)
+		lines = append(lines, layout.controllerEgressRules(name)...)
+		translated, _ = layout.translatedEgress(name)
+		lines = append(lines, translated...)
 		for _, set := range grantSets {
 			_, incoming := guardTags(set)
 			family, protocol := guardProtocol(set)
 			lines = append(lines, fmt.Sprintf(
 				"meta l4proto %s meta mark & 0xff000000 == %s "+
-					"oifname . ether daddr . %s daddr . %s saddr . (meta mark & 0x0000ffff) @%s return",
-				protocol, incoming, family, family, egressSet(set),
+					"oifname . ether daddr . %s daddr . %s saddr . %s %s @%s return",
+				protocol, incoming, family, family, protocol, guardEgressListener(set), egressSet(set),
 			))
 		}
 		// A projected IP permit must not transfer to an unclassified new MAC.
@@ -128,8 +169,13 @@ func (layout *guardLayout) program(ctx context.Context) ([]byte, error) {
 		lines = append(lines,
 			"meta mark & 0xff000000 == "+fromReplyTag+" drop",
 			"meta mark & 0xff000000 == "+toOriginalTag+" drop",
-			"ether daddr @"+cohortSet+" drop", "}",
+			"ether daddr @"+cohortSet+" drop",
 		)
+		// Controller tags cannot fall through on the wrong physical egress.
+		lines = append(lines, layout.controllerTagDrops()...)
+		lines = append(lines, bootstrapTagDrop())
+		lines = append(lines, translatedDrops...)
+		lines = append(lines, "}")
 	}
 	lines = append(lines, "}")
 	if err := ctx.Err(); err != nil {
@@ -167,12 +213,19 @@ func permanentGuardSets() []string {
 }
 
 func guardSetDefinition(name, datatype string) string {
-	return fmt.Sprintf("set %s { type %s; flags timeout; timeout 90s; size %d; }",
+	return fmt.Sprintf("set %s { type %s; flags interval,timeout; timeout 90s; size %d; }",
 		name, datatype, maximumTupleCount)
 }
 
 func inboundSet(name string) string { return "inbound_" + name }
 func egressSet(name string) string  { return "egress_" + name }
+
+func guardEgressListener(name string) string {
+	if strings.HasPrefix(name, "lease_from") {
+		return "sport"
+	}
+	return "dport"
+}
 
 func guardProtocol(name string) (string, string) {
 	family, protocol := "ip6", "tcp"
@@ -204,12 +257,12 @@ func guardLookups(verdict string) []string {
 		lines = append(lines,
 			fmt.Sprintf("meta l4proto %s ct state { new, established } ct direction %s "+
 				"iifname . ether saddr . %s saddr . %s daddr . ct original proto-dst @%s "+
-				"meta mark set (meta mark & %s) | ct original proto-dst meta mark set meta mark | %s %s",
-				protocol, sourceDirection, family, family, name, guardMarkKeep, outgoing, verdict),
+				"goto %s",
+				protocol, sourceDirection, family, family, name, guardStampChain(outgoing, verdict)),
 			fmt.Sprintf("meta l4proto %s ct state { new, established } ct direction %s "+
 				"oifname . %s daddr . %s saddr . ct original proto-dst @%s "+
-				"meta mark set (meta mark & %s) | ct original proto-dst meta mark set meta mark | %s %s",
-				protocol, targetDirection, family, family, inboundSet(name), guardMarkKeep, incoming, verdict),
+				"goto %s",
+				protocol, targetDirection, family, family, inboundSet(name), guardStampChain(incoming, verdict)),
 		)
 	}
 	return lines

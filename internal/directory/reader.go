@@ -1,10 +1,9 @@
-// Package directory collects original Authentik entries over verified LDAPS.
+// Package directory collects original Authentik entries over verified TLS.
 // It neither supplies network bindings nor authenticates a NAS session.
 package directory
 
 import (
 	"context"
-	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"net"
@@ -22,7 +21,8 @@ import (
 var ErrRead = errors.New("directory: collection failed")
 
 // Config is private deployment configuration, never a group attribute.
-// URL must be an explicit ldaps:// host and port. RootCAs nil uses system roots.
+// URL must be an explicit ldaps:// or ldap+starttls:// host and port.
+// RootCAs nil uses system roots. Neither transport permits a plaintext bind.
 // Deployment must separately qualify direct search and reserved-field controls.
 type Config struct {
 	URL            string
@@ -32,6 +32,9 @@ type Config struct {
 	PageSize       uint32
 	MaximumDevices int
 	MaximumGroups  int
+	// Unpaged selects one bounded search per namespace. False requires paging;
+	// there is no automatic fallback when a server omits paging controls.
+	Unpaged bool
 }
 
 // Credentials are obtained again for every collection to support rotation.
@@ -59,13 +62,13 @@ func New(config Config, credentials func(context.Context) (Credentials, error)) 
 	if err != nil || endpoint == nil {
 		return nil, errors.New("directory: invalid endpoint")
 	}
-	isUnsafeEndpoint := endpoint.Scheme != "ldaps" || endpoint.User != nil ||
+	isUnsafeEndpoint := (endpoint.Scheme != "ldaps" && endpoint.Scheme != "ldap+starttls") || endpoint.User != nil ||
 		endpoint.Path != "" || endpoint.RawQuery != "" || endpoint.Fragment != "" ||
 		endpoint.Opaque != "" || endpoint.ForceQuery
 	host, port, splitErr := net.SplitHostPort(endpoint.Host)
 	portNumber, portErr := strconv.ParseUint(port, 10, 16)
 	if isUnsafeEndpoint || splitErr != nil || portErr != nil || portNumber == 0 || host == "" {
-		return nil, errors.New("directory: verified ldaps endpoint required")
+		return nil, errors.New("directory: verified tls endpoint required")
 	}
 	base, parseErr := ldap.ParseDN(config.BaseDN)
 	isBadNamespace := parseErr != nil || base == nil || len(base.RDNs) == 0 || len(config.BaseDN) > 1024
@@ -103,15 +106,7 @@ func (r *Reader) Collect(ctx context.Context) (result policy.DirectorySnapshot, 
 	if err != nil || ctx.Err() != nil || !validCredentials(credentials, r.config.BaseDN) {
 		return policy.DirectorySnapshot{}, readError(ctx)
 	}
-	dialer := tls.Dialer{
-		NetDialer: &net.Dialer{Timeout: r.config.Timeout},
-		Config: &tls.Config{
-			MinVersion: tls.VersionTLS12,
-			ServerName: r.hostname,
-			RootCAs:    r.config.RootCAs,
-		},
-	}
-	connection, err := dialer.DialContext(ctx, "tcp", r.address)
+	connection, err := r.dialVerified(ctx)
 	if err != nil {
 		return policy.DirectorySnapshot{}, readError(ctx)
 	}
