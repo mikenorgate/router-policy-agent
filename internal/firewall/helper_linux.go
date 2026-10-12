@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/mikenorgate/router-policy-agent/internal/binding"
 	"github.com/mikenorgate/router-policy-agent/internal/radius"
@@ -24,7 +25,7 @@ func RunHelper(ctx context.Context, directory, bindingDirectory string) (result 
 	if err != nil {
 		return err
 	}
-	requestFD, statusFD, valid := activationEnvironment(os.Getpid(), os.Getenv)
+	requestFD, statusFD, observationFD, valid := helperActivationEnvironment(os.Getpid(), os.Getenv)
 	if !valid {
 		return errors.New("firewall: two named supervisor sockets required")
 	}
@@ -42,8 +43,16 @@ func RunHelper(ctx context.Context, directory, bindingDirectory string) (result 
 		!configuredListenerMatches(status, config.StatusSocket) {
 		return errors.New("firewall: inherited sockets differ from configuration")
 	}
+	var observations *net.UnixListener
+	if observationFD != 0 {
+		observations, err = inheritedListener(observationFD)
+		if err != nil {
+			return err
+		}
+		defer func() { result = errors.Join(result, closeHelperListener(observations)) }()
+	}
 	return runConfiguredService(ctx, configuredOptions{
-		directory: directory, requests: requests, status: status,
+		directory: directory, requests: requests, status: status, observations: observations,
 		bindingSource: config.BindingSource,
 		bindings: func(ctx context.Context) (binding.Snapshot, error) {
 			if config.BindingSource == radiusShadowSource {
@@ -111,4 +120,30 @@ func closeHelperListener(listener *net.UnixListener) error {
 		return nil
 	}
 	return err
+}
+
+// The legacy two-socket interface is retained. The optional third descriptor is
+// only the read-only observation endpoint and carries a separate supervisor name.
+func helperActivationEnvironment(pid int, getenv func(string) string) (uintptr, uintptr, uintptr, bool) {
+	if a, b, ok := activationEnvironment(pid, getenv); ok {
+		return a, b, 0, true
+	}
+	if getenv("LISTEN_PID") != strconv.Itoa(pid) || getenv("LISTEN_FDS") != "3" {
+		return 0, 0, 0, false
+	}
+	names := strings.Split(getenv("LISTEN_FDNAMES"), ":")
+	if len(names) != 3 {
+		return 0, 0, 0, false
+	}
+	fds := map[string]uintptr{}
+	for i, name := range names {
+		if name != "requests" && name != "status" && name != "observations" {
+			return 0, 0, 0, false
+		}
+		if fds[name] != 0 {
+			return 0, 0, 0, false
+		}
+		fds[name] = uintptr(3 + i)
+	}
+	return fds["requests"], fds["status"], fds["observations"], true
 }

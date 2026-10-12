@@ -389,6 +389,7 @@ func blockedRecoveryFixture(
 	if fd > math.MaxInt {
 		t.Fatal("invalid fixture lock descriptor")
 	}
+	// #nosec G115 -- The synthetic descriptor is checked against math.MaxInt above.
 	if err := syscall.Flock(int(fd), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		t.Fatal(err)
 	}

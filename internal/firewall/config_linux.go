@@ -24,6 +24,8 @@ const radiusShadowSource = "radius_shadow"
 // release/configuration, not be learned from live files or firewall listings.
 // It cannot initialize state, override clocks, supply bindings or select hooks.
 type helperConfig struct {
+	ObserverUID        uint32           `json:"observer_uid,omitempty"`
+	ObservationsSocket string           `json:"observations_socket,omitempty"`
 	SchemaVersion      int              `json:"schema_version"`
 	Mode               agent.Mode       `json:"mode"`
 	BindingSource      string           `json:"binding_source,omitempty"`
@@ -55,7 +57,7 @@ func decodeHelperConfig(ctx context.Context, data []byte) (helperConfig, error) 
 		"schema_version", "mode", "profile", "generation_directory", "state_directory", "nft_executable",
 		"reader_uid", "operator_uid", "request_timeout_ms", "request_socket", "status_socket", "expected_generation",
 	}
-	if err := strictjson.Object(data, keys, []string{"binding_source"}, maximumHelperConfig); err != nil {
+	if err := strictjson.Object(data, keys, []string{"binding_source", "observer_uid", "observations_socket"}, maximumHelperConfig); err != nil {
 		return helperConfig{}, profileFailure("helper configuration structure invalid", err)
 	}
 	object := map[string]json.RawMessage{}
@@ -89,6 +91,11 @@ func (c helperConfig) validate() error {
 		return errors.New("firewall: collector proposals require shadow-only mode")
 	}
 	validIDs := c.ReaderUID != 0 && c.OperatorUID != 0 && c.ReaderUID != c.OperatorUID
+	if c.ObserverUID != 0 || c.ObservationsSocket != "" {
+		if c.ObserverUID == 0 || c.ObserverUID == c.ReaderUID || c.ObserverUID == c.OperatorUID || !helperPath(c.ObservationsSocket, 107) || c.ObservationsSocket == c.RequestSocket || c.ObservationsSocket == c.StatusSocket {
+			return errors.New("firewall: observations require a separate identity and socket")
+		}
+	}
 	validTimeout := c.RequestTimeoutMS > 0 && c.RequestTimeoutMS <= 10_000
 	if c.SchemaVersion != 1 || !validIDs || !validTimeout || !generationHash(c.Profile.SHA256) {
 		return errors.New("firewall: invalid helper configuration bounds")
@@ -117,7 +124,7 @@ func (c helperConfig) validate() error {
 				return errors.New("firewall: helper private resource directories overlap")
 			}
 		}
-		if helperContains(directory, c.RequestSocket) || helperContains(directory, c.StatusSocket) {
+		if helperContains(directory, c.RequestSocket) || helperContains(directory, c.StatusSocket) || c.ObservationsSocket != "" && helperContains(directory, c.ObservationsSocket) {
 			return errors.New("firewall: helper socket overlaps a private resource directory")
 		}
 	}

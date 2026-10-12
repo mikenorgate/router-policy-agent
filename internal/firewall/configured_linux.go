@@ -6,6 +6,7 @@ import (
 	"math"
 	"net"
 	"os"
+	"sync"
 	"syscall"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 // The supervisor supplies both already-created listeners. Bindings must come
 // from an independently qualified producer; a fixture/config file is not one.
 type configuredOptions struct {
+	observations  *net.UnixListener
 	directory     string
 	bindingSource string
 	bindings      func(context.Context) (binding.Snapshot, error)
@@ -61,6 +63,12 @@ func runConfiguredWithClock(
 	if !validRequests || !validStatus {
 		return errors.New("firewall: supervisor listeners differ from helper configuration")
 	}
+	if (options.observations == nil) != (config.ObservationsSocket == "") {
+		return errors.New("firewall: observation endpoint differs from trusted configuration")
+	}
+	if options.observations != nil && !configuredListenerMatches(options.observations, config.ObservationsSocket) {
+		return errors.New("firewall: incorrect observations listener")
+	}
 	resources, err := openConfiguredWithClock(
 		ctx,
 		config,
@@ -75,6 +83,15 @@ func runConfiguredWithClock(
 		defer cancel()
 		result = errors.Join(result, resources.close(cleanup))
 	}()
+	// Observation transport failure is isolated from enforcement. Cancellation
+	// still joins the observer before releasing its immutable snapshot owner.
+	observerCtx, stopObserver := context.WithCancel(ctx)
+	var observerWorkers sync.WaitGroup
+	if options.observations != nil {
+		options.observations.SetUnlinkOnClose(false)
+		observerWorkers.Go(func() { _ = resources.observer.Serve(observerCtx, options.observations) })
+	}
+	defer func() { stopObserver(); observerWorkers.Wait() }()
 	return resources.service.serveListeners(ctx, serviceListeners{
 		requests: options.requests, status: options.status, operator: resources.operator,
 	})
@@ -108,6 +125,7 @@ func configuredListenerMatches(listener *net.UnixListener, path string) bool {
 }
 
 type configuredResources struct {
+	observer *ipc.Server
 	service  *guardedService
 	operator *ipc.Server
 	backend  *guardedBackend
@@ -168,6 +186,19 @@ func openConfiguredWithClock(
 	r.operator, err = r.service.newStatusServer(config.OperatorUID, timeout)
 	if err != nil {
 		return nil, err
+	}
+	if config.ObserverUID != 0 {
+		r.observer, err = ipc.NewObservationsServer(ipc.ServerOptions{ReaderUID: config.ObserverUID, Timeout: min(timeout, 2*time.Second)}, func(ctx context.Context, request ipc.ObservationRequest) (ipc.ObservationResponse, error) {
+			response, err := r.service.engine.Observations(ctx, request)
+			if response.Snapshot != nil {
+				response.Snapshot.WriterSequence = r.backend.options.expected.Sequence
+				response.Snapshot.FloorHash = r.backend.options.expected.FloorHash
+			}
+			return response, err
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
