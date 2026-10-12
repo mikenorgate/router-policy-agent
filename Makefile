@@ -22,13 +22,17 @@ integration:
 kernel:
 	$(CONTAINER) build --file packaging/Containerfile.kernel --tag $(KERNEL_TEST_IMAGE) .
 	$(CONTAINER) run --rm --network none --cap-drop ALL --cap-add NET_ADMIN --cap-add NET_RAW \
+		--cap-add CHOWN --cap-add SETUID --cap-add SETGID --cap-add DAC_OVERRIDE --cap-add FOWNER \
 		--sysctl net.ipv4.ip_forward=1 --sysctl net.ipv6.conf.all.forwarding=1 \
 		--security-opt no-new-privileges \
 		--env ROUTER_POLICY_KERNEL_TEST=isolated \
 		--env ROUTER_POLICY_REQUIRE_HEADER_TEST \
 		--mount type=bind,src="$(CURDIR)",dst=/workspace,readonly \
 		--workdir /workspace $(KERNEL_TEST_IMAGE) \
-		go test -race -shuffle=on -count=1 -tags integration,kernel ./internal/firewall
+		sh -c 'go test -race -shuffle=on -count=1 -p 2 -parallel 4 -tags integration,kernel \
+			-coverprofile=/tmp/coverage.out ./... && \
+			go tool cover -func=/tmp/coverage.out | \
+			awk '\''/total:/ { print; sub(/%/, "", $$3); if ($$3 < 80) exit 1 }'\'''
 
 ## kernel-service: Qualify non-root IPC, durable state and actual native firewall lifecycle
 kernel-service:

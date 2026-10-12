@@ -29,12 +29,14 @@ func bindingPublisherFixture(t *testing.T, now time.Time) (BindingPublisherOptio
 	record.AssociatedAt = record.AssociatedAt.Add(shift)
 	record.Addresses[0].ObservedAt = record.Addresses[0].ObservedAt.Add(shift)
 	record.Addresses[0].ValidUntil = record.Addresses[0].ValidUntil.Add(shift)
-	return BindingPublisherOptions{
+	publisher := BindingPublisherOptions{
 		Collector: options, Directory: "/synthetic/private", ManagedMACs: []string{record.MAC},
-	}, Collection{
+	}
+	collection := Collection{
 		ObservedAt: now, Generation: strings.Repeat("a", 64), PlacementChecked: true,
 		PlacementMode: placementGuarded, ProposedBindings: []binding.Record{record},
 	}
+	return publisher, collection
 }
 
 func TestBindingExportPreservesEvidenceAndRestrictsEnrollment(t *testing.T) {
