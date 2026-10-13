@@ -56,7 +56,8 @@ fmt:
 
 ## fuzz: Exercise policy, protocol, LDAP framing, durable-state and writer-generation fuzz properties
 fuzz:
-	$(GO) test ./internal/strictjson -run '^$$' -fuzz FuzzDecode -fuzztime 10s
+	$(GO) test ./internal/strictjson -run '^$$' -fuzz '^FuzzDecode$$' -fuzztime 10s
+	$(GO) test ./internal/strictjson -run '^$$' -fuzz '^FuzzDecodeMatchesTokenReference$$' -fuzztime 10s
 	$(GO) test ./internal/directory -run '^$$' -fuzz '^FuzzFrameReader$$' -fuzztime 10s
 	$(GO) test ./internal/reader -run '^$$' -fuzz '^FuzzReaderConfig$$' -fuzztime 10s
 	$(GO) test ./internal/policy -run '^$$' -fuzz FuzzParseGroup -fuzztime 10s
