@@ -41,7 +41,7 @@ type Scope struct {
 }
 
 // Observation contains only unambiguous, fresh sessions from one replay.
-// Withheld counts MACs with conflicting current sessions, including roaming.
+// Withheld counts MACs with ambiguous or uncorroborated current sessions.
 // ObservedAt is the caller's collection time, not a session heartbeat.
 type Observation struct {
 	ObservedAt time.Time
@@ -85,25 +85,20 @@ type accountingEvent struct {
 }
 
 type event struct {
-	mac       string
-	nas       netip.Addr
-	key       string
-	status    string
-	original  time.Time
-	journalAt time.Time
-	duration  uint64
-	ip        netip.Addr
-	vlan      uint16
-	port      string
-	ipv6      bool
-}
-
-type sessionState struct {
-	first    event
-	last     event
-	started  bool
-	closed   bool
-	conflict bool
+	mac          string
+	nas          netip.Addr
+	key          string
+	status       string
+	original     time.Time
+	journalAt    time.Time
+	duration     uint64
+	ip           netip.Addr
+	vlan         uint16
+	port         string
+	ipv6         bool
+	monotonic    time.Duration
+	hasMonotonic bool
+	canRecover   bool
 }
 
 // Replay consumes a bounded, chronological journal JSON capture, preserving
@@ -111,7 +106,8 @@ type sessionState struct {
 // authenticate the journal source and supply complete current-boot history;
 // JSON metadata alone cannot authenticate arbitrary input or prove completeness.
 // Do not use a tail, reverse-order capture or previously filtered active list.
-// Missing Starts, reused IDs and overlapping sessions withhold candidates.
+// Missing Starts require corroborating post-boot interim evidence. Reused IDs
+// retain separate duration-anchored generations; ambiguous overlaps withhold.
 // Malformed, oversized, wrong-source or out-of-order input returns no result.
 // This is a correlation core, not an installed collector or enforcement feed.
 func Replay(data []byte, scope Scope, now time.Time) (Observation, error) {
@@ -119,9 +115,10 @@ func Replay(data []byte, scope Scope, now time.Time) (Observation, error) {
 		(len(data) != 0 && data[len(data)-1] != '\n') {
 		return Observation{}, errors.New("radius: invalid scope or incomplete history")
 	}
-	states := make(map[string]*sessionState)
-	previous := time.Time{}
+	states := make(map[string][]*sessionState)
+	var previous event
 	count := 0
+	sessions := 0
 	for line := range bytes.Lines(data) {
 		count++
 		if count > maximumEvents {
@@ -131,22 +128,15 @@ func Replay(data []byte, scope Scope, now time.Time) (Observation, error) {
 		if err != nil {
 			return Observation{}, err
 		}
-		if item.journalAt.Before(previous) {
+		if item.journalAt.Before(previous.journalAt) ||
+			item.hasMonotonic && previous.hasMonotonic && (item.monotonic < previous.monotonic ||
+				!near(previous.journalAt.Add(item.monotonic-previous.monotonic), item.journalAt)) {
 			return Observation{}, errors.New("radius: journal clock or order conflict")
 		}
-		previous = item.journalAt
-		state, exists := states[item.key]
-		if !exists {
-			if len(states) >= maximumSessions {
-				return Observation{}, errors.New("radius: session limit exceeded")
-			}
-			state = &sessionState{first: item, last: item}
-			states[item.key] = state
+		previous = item
+		if err := applyEvent(states, item, &sessions); err != nil {
+			return Observation{}, err
 		}
-		if state.first.mac != item.mac {
-			return Observation{}, errors.New("radius: session identity has conflicting owners")
-		}
-		state.apply(item)
 	}
 	return current(states, now), nil
 }
@@ -208,6 +198,19 @@ func decodeEntry(data []byte, scope Scope, now time.Time) (event, error) {
 		return event{}, errors.New("radius: journal receipt clock conflict")
 	}
 	item.journalAt = journalAt
+	if raw, exists := entry["__MONOTONIC_TIMESTAMP"]; exists {
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return event{}, errors.New("radius: invalid journal monotonic timestamp")
+		}
+		micros, err := unsigned(value, math.MaxInt64)
+		if err != nil || micros > uint64(math.MaxInt64/int64(time.Microsecond)) {
+			return event{}, errors.New("radius: invalid journal monotonic timestamp")
+		}
+		item.monotonic = time.Duration(micros) * time.Microsecond // Bounded above before conversion.
+		item.hasMonotonic = true
+		item.canRecover = !item.original.Before(journalAt.Add(-item.monotonic))
+	}
 	return item, nil
 }
 
@@ -283,82 +286,6 @@ func normalize(raw accountingEvent, scope Scope, now time.Time) (event, error) {
 		port: digest(raw.NASPort, raw.NASPortType, hex.EncodeToString(portID)),
 		ipv6: raw.IPv6Addresses != "" || raw.IPv6Prefixes != "" || raw.InterfaceID != "",
 	}, nil
-}
-
-// apply never removes a tombstone. Newer durations remain anchored to the
-// original Start, so a delayed duplicate cannot become a new heartbeat.
-func (state *sessionState) apply(item event) {
-	if item.status == "Stop" {
-		state.closed = true
-		return
-	}
-	if state.closed {
-		return
-	}
-	if item.status == "Start" {
-		switch {
-		case item.duration != 0:
-			state.conflict = true
-		case !state.started:
-			state.first, state.last, state.started = item, item, true
-		case item.original != state.first.original || !samePlacement(item, state.first):
-			state.conflict = true
-		}
-		return
-	}
-	if !state.started {
-		state.conflict = true
-		state.last = item
-		return
-	}
-	if item.duration < state.last.duration {
-		return
-	}
-	if item.duration == state.last.duration {
-		if !samePlacement(item, state.last) {
-			state.conflict = true
-		}
-		return
-	}
-	if item.duration > uint64(math.MaxInt64/int64(time.Second)) {
-		state.conflict = true
-		return
-	}
-	anchored := state.first.original.Add(time.Duration(item.duration) * time.Second)
-	if !near(anchored, item.original) || item.port != state.first.port || item.vlan != state.last.vlan {
-		state.conflict = true
-		return
-	}
-	if anchored.Before(item.original) {
-		item.original = anchored
-	}
-	state.last = item
-}
-
-func current(states map[string]*sessionState, now time.Time) Observation {
-	byMAC := make(map[string][]*sessionState)
-	for _, state := range states {
-		if !state.closed && !state.last.original.After(now) && now.Before(state.last.original.Add(Freshness)) {
-			byMAC[state.first.mac] = append(byMAC[state.first.mac], state)
-		}
-	}
-	result := Observation{ObservedAt: now, Sessions: []Session{}}
-	for mac, active := range byMAC {
-		if len(active) != 1 || active[0].conflict || !active[0].started {
-			result.Withheld++
-			continue
-		}
-		state := active[0]
-		result.Sessions = append(result.Sessions, Session{
-			MAC: mac, NAS: state.last.nas,
-			AssociationID: digest(state.first.key, strconv.FormatInt(state.first.original.Unix(), 10)),
-			StartedAt:     state.first.original, ObservedAt: state.last.original,
-			ValidUntil: state.last.original.Add(Freshness), IPv4: state.last.ip,
-			ReportedVLAN: state.last.vlan, IPv6Reported: state.last.ipv6,
-		})
-	}
-	slices.SortFunc(result.Sessions, func(a, b Session) int { return strings.Compare(a.MAC, b.MAC) })
-	return result
 }
 
 func samePlacement(a, b event) bool {

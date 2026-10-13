@@ -35,8 +35,8 @@ type history struct {
 
 // captureHistory always reads the local system journal, oldest first. It has
 // no tail, reverse, remote, path, shell, inherited environment or cache fallback.
-// Retained journal history is not a durable accounting database: missing Starts
-// deny, and retention/rotation must still be qualified for an installed service.
+// Retained journal history is not a durable accounting database. Missing Starts
+// need corroborating post-boot interims, not a fabricated or cached association.
 func captureHistory(ctx context.Context, options JournalOptions) (captured history, result error) {
 	if ctx == nil || os.Geteuid() != 0 || options.Timeout <= 0 || options.Timeout > 10*time.Second {
 		return history{}, errors.New("radius: invalid privileged journal options")
@@ -143,7 +143,7 @@ func currentBootID() (string, error) {
 func journalArguments(scope Scope) []string {
 	return []string{
 		"--system", "--no-pager", "--all", "--output=json", "--boot=" + scope.BootID,
-		"--output-fields=MESSAGE,_SYSTEMD_UNIT,SYSLOG_IDENTIFIER,_BOOT_ID,_UID,__REALTIME_TIMESTAMP,__CURSOR",
+		"--output-fields=MESSAGE,_SYSTEMD_UNIT,SYSLOG_IDENTIFIER,_BOOT_ID,_UID,__REALTIME_TIMESTAMP,__MONOTONIC_TIMESTAMP,__CURSOR",
 		"--grep=^" + marker,
 		"_SYSTEMD_UNIT=freeradius.service", "SYSLOG_IDENTIFIER=freeradius",
 		"_UID=" + strconv.FormatUint(uint64(scope.ServiceUID), 10),

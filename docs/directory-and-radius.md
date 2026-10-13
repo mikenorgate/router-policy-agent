@@ -280,13 +280,25 @@ The installed source adapter must collect complete history, not a tail or an
 active-session list. Replay rejects incomplete lines and bounded-input limits;
 it cannot detect deliberate removal of complete entries by an untrusted caller.
 
-Start anchors each session's duration. Fresh Interim-Update observations keep
-their original event time, adjusted conservatively for accounting delay. Exact
-duplicates and rereads do not refresh it; a Stop tombstone never reopens within
-the same boot/NAS/session identity. Missing Starts, ID reuse and conflicting
-current sessions withhold candidates. A fresh roaming overlap remains withheld
-until the old session stops or expires. Malformed or wrong-source input rejects
-the whole observation, without returning partial sessions.
+A Start anchors the session's duration. If the Start is unavailable after a
+router restart or journal rotation, two progressing Interim-Update observations
+can recover the session without reconnecting the device. They must agree on
+NAS, MAC, session ID, duration-derived connection start, reported IP and
+placement, and arrive less than ninety seconds apart. Both original event times
+must be after the current router boot, proven by the journal's realtime and
+monotonic timestamps. A missing monotonic timestamp disables this recovery path;
+malformed or inconsistent clock metadata rejects the observation. The timestamps
+are microsecond-valued journal metadata, not NAS claims; see the
+[systemd journal export format](https://systemd.io/JOURNAL_EXPORT_FORMATS/).
+
+Fresh interims retain their original event time, adjusted conservatively for
+accounting delay. Exact duplicates and rereads do not refresh it. The latest
+event still expires after ninety seconds. A Stop permanently closes its
+duration-anchored connection generation within the captured history. A reused
+NAS/session ID can identify a later generation, but a delayed Stop from the old
+generation cannot close the new one. Ambiguous timing, conflicting owners and
+fresh overlapping sessions remain withheld. Malformed or wrong-source input
+rejects the whole observation, without returning partial sessions.
 
 `internal/radius.MatchIPv4` joins one fresh session with one current Kea lease
 whose canonical MAC, reported IPv4, subnet and prefix agree. Multiple leases,
@@ -327,13 +339,24 @@ the next attempt starts from the sources again. Original session and first-query
 lease times are retained. Clock conflicts, duplicate IP owners and expired
 evidence also reject without partial candidates.
 
+A session with no reported IPv4 is withheld without querying DHCP. A successful
+DHCP query with no unique lease, or an IP that disagrees with accounting, also
+withholds only that device. Healthy devices can still qualify. These omissions
+never infer ownership from DHCP alone: malformed responses, unavailable sources
+and changes during a qualified device's recheck still reject the collection.
+
 This detects observed races; it is not an atomic transaction across RADIUS and
 DHCP. Changes after an observation remain possible. The journal is retained
 current-boot history, not a durable session database or proof that no historical
-record was lost. Missing Starts deny candidates. Rotation, NAS/service restart
-and live source identity still need qualification. Bounds are 16 MiB of journal
-output, 16,384 events, 4,096 replayed sessions and at most 256 candidate devices;
-exceeding them fails closed rather than falling back to a tail or cache. Overall
+record was lost. A missing Start requires the corroboration described above,
+plus the usual matching DHCP and independent placement checks. With a sixty-
+second interim interval, recovery normally needs one to two minutes after fresh
+accounting resumes; it never restores permissions from saved bindings. Rotation,
+NAS/service restart and live source identity still need deployment qualification.
+Bounds are 16 MiB of journal output, 16,384 events, 4,096 replayed connection
+generations (including closed generations and reused IDs) and at most 256
+candidate devices; exceeding them fails closed rather than falling back to a
+tail or cache. Overall
 collection is capped at thirty seconds, with each source read capped at ten.
 
 `internal/radius.PublishIPv4` uses an existing root-private directory dedicated

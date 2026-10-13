@@ -53,8 +53,10 @@ type collectionSources struct {
 // local journal captures. History must remain an append-only prefix after JSON
 // object order is normalized. The current session cohort must stay identical;
 // leases must retain owner, renewal and expiry. A Stop, roam, renewal,
-// reassignment, clock/source failure or quota
-// breach returns no collection. Later changes remain possible: this detects
+// reassignment, clock/source failure or quota breach returns no collection.
+// Missing reported IPv4, absent/ambiguous leases or a stable IP mismatch withhold
+// only that device. They never supply a candidate or bypass source checks.
+// Later changes remain possible: this detects
 // observed races, not a cross-daemon lock. No firewall operation is performed.
 // Optional host-placement reads bracket the lease recheck; both must agree.
 func CollectIPv4(ctx context.Context, options CollectorOptions) (Collection, error) {
@@ -116,15 +118,26 @@ func collectIPv4(ctx context.Context, options CollectorOptions, sources collecti
 		return Collection{}, errors.New("radius: accounting source invalid or device quota exceeded")
 	}
 	scope := LeaseScope{SubnetID: options.Kea.SubnetID, Prefix: options.Kea.Prefix, VLAN: options.VLAN}
+	qualified := make([]Session, 0, len(observation.Sessions))
 	leases := make([]kea.Observation, 0, len(observation.Sessions))
+	withheld := observation.Withheld
 	for _, session := range observation.Sessions {
+		if !session.IPv4.IsValid() {
+			withheld++
+			continue
+		}
 		lease, err := sources.lease(ctx, session.MAC)
 		if err != nil {
 			return Collection{}, errors.Join(errors.New("radius: lease source unavailable"), ctx.Err())
 		}
+		if len(lease.Leases) != 1 || lease.Leases[0].IP != session.IPv4 {
+			withheld++
+			continue
+		}
 		if _, err := MatchIPv4(session, lease, scope, sources.now().UTC()); err != nil {
 			return Collection{}, err
 		}
+		qualified = append(qualified, session)
 		leases = append(leases, lease)
 	}
 	var firstPlacement placementObservation
@@ -138,7 +151,7 @@ func collectIPv4(ctx context.Context, options CollectorOptions, sources collecti
 	if err != nil || !steadyHistory(first, second, observation) {
 		return Collection{}, errors.Join(errors.New("radius: accounting changed during lease collection"), ctx.Err())
 	}
-	for index, session := range observation.Sessions {
+	for index, session := range qualified {
 		lease, err := sources.lease(ctx, session.MAC)
 		if err != nil {
 			return Collection{}, errors.Join(errors.New("radius: lease recheck unavailable"), ctx.Err())
@@ -168,7 +181,7 @@ func collectIPv4(ctx context.Context, options CollectorOptions, sources collecti
 	if now.Before(started) || wallElapsed < 0 || !near(started.UTC().Add(now.Sub(started)), now.UTC()) {
 		return Collection{}, errors.New("radius: collector clock conflict")
 	}
-	result := Collection{ObservedAt: now.UTC(), Candidates: []IPv4Candidate{}, Withheld: observation.Withheld}
+	result := Collection{ObservedAt: now.UTC(), Candidates: []IPv4Candidate{}, Withheld: withheld}
 	if options.Placement != nil {
 		result.PlacementChecked, result.ProposedBindings = true, []binding.Record{}
 	}
@@ -178,7 +191,7 @@ func collectIPv4(ctx context.Context, options CollectorOptions, sources collecti
 		identities = append(identities, placementGuarded)
 	}
 	owners := make(map[netip.Addr]bool)
-	for index, session := range observation.Sessions {
+	for index, session := range qualified {
 		candidate, err := MatchIPv4(session, leases[index], scope, result.ObservedAt)
 		if err != nil || owners[candidate.IP] {
 			return Collection{}, errors.New("radius: expired or duplicate ownership at collection end")

@@ -72,7 +72,7 @@ func TestCollectIPv4WithholdsObservedSourceRaces(t *testing.T) {
 	for _, mode := range []string{"disabled", placementReachable, placementGuarded} {
 		for _, name := range []string{"initial source loss", "middle source loss", "final source loss", "initial lease loss",
 			"recheck lease loss", "stop in middle", "stop at end", "roam", "heartbeat advanced", "history removed", "history rewritten",
-			"boot changed", "scope changed", "lease reassigned", "lease renewed", "lease missing", "stale final evidence", "clock reversed"} {
+			"boot changed", "scope changed", "lease reassigned", "lease renewed", "stale final evidence", "clock reversed"} {
 			t.Run(mode+"/"+name, func(t *testing.T) {
 				t.Parallel()
 				original := fixtureCapturedHistory(t)
@@ -124,9 +124,6 @@ func TestCollectIPv4WithholdsObservedSourceRaces(t *testing.T) {
 							return kea.Observation{}, errors.New("synthetic lease unavailable")
 						}
 						lease := fixtureLeaseObservation()
-						if name == "lease missing" {
-							lease.Leases = []kea.Lease{}
-						}
 						if leaseReads == 2 {
 							switch name {
 							case "lease reassigned":
