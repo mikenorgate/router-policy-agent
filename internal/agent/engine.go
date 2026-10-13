@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/mikenorgate/router-policy-agent/internal/binding"
@@ -73,6 +74,7 @@ type Engine struct {
 	startupTime      time.Time
 	startupDirectory time.Time
 	observation      observation
+	provenance       atomic.Pointer[ipc.ObservationSnapshot]
 }
 
 // New copies and validates the helper-owned baseline. Shadow mode rejects
@@ -300,6 +302,7 @@ func (engine *Engine) Process(
 		return ipc.Receipt{}, err
 	}
 	engine.rememberDecision(candidate, authorization, snapshot.ObservedAt, len(bindings.Records))
+	engine.rememberProvenance(candidate, snapshot, bindings)
 	return ipc.Receipt{SchemaVersion: 1, Status: status, BaselineHash: candidate.BaselineHash,
 		CompiledAt: candidate.CompiledAt, GrantCount: len(candidate.Grants), DenialCount: len(candidate.Denials)}, nil
 }

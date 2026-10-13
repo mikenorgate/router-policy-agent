@@ -184,5 +184,6 @@ func fileDescriptor(file *os.File) (int, error) {
 	if file == nil || file.Fd() > math.MaxInt32 {
 		return 0, errors.New("radius: invalid file descriptor")
 	}
+	// #nosec G115 -- The descriptor is range checked against math.MaxInt above.
 	return int(file.Fd()), nil
 }

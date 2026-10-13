@@ -33,9 +33,10 @@ type ServerOptions struct {
 // Server handles one bounded transaction at a time, without per-client worker
 // goroutines or a concurrent mutable policy engine.
 type Server struct {
-	options ServerOptions
-	process ProcessFunc
-	report  ReportFunc
+	options      ServerOptions
+	process      ProcessFunc
+	report       ReportFunc
+	observations ObservationsFunc
 }
 
 // NewServer rejects missing processors and timeouts outside the ten-second cap.
@@ -55,7 +56,17 @@ func (s *Server) Serve(ctx context.Context, listener *net.UnixListener) (result 
 	if ctx == nil || s == nil || listener == nil || s.options.Timeout <= 0 {
 		return errors.New("ipc: invalid server or listener")
 	}
-	if (s.process == nil) == (s.report == nil) {
+	operations := 0
+	if s.process != nil {
+		operations++
+	}
+	if s.report != nil {
+		operations++
+	}
+	if s.observations != nil {
+		operations++
+	}
+	if operations != 1 {
 		return errors.New("ipc: server requires exactly one operation")
 	}
 	defer func() { result = errors.Join(result, closeExpected(listener)) }()
@@ -104,6 +115,9 @@ func (s *Server) serveConnection(ctx context.Context, connection *net.UnixConn) 
 	defer func() { result = errors.Join(result, stop()) }()
 	if s.report != nil {
 		return s.serveStatus(ctx, connection)
+	}
+	if s.observations != nil {
+		return s.serveObservations(ctx, connection)
 	}
 	data, err := readFrame(connection, maximumRequest)
 	if err != nil {

@@ -95,6 +95,10 @@ func TestKernelGuardedServiceConfiguredShadowDoesNotMutateRuleset(t *testing.T) 
 		t.Fatal(err)
 	}
 	config.Mode = agent.Shadow
+	// The read-only endpoint is configured but unavailable. Core processing
+	// and the independent aggregate status endpoint must remain operational.
+	config.ObserverUID = 65532
+	config.ObservationsSocket = filepath.Join(filepath.Dir(config.RequestSocket), "unavailable-observer.sock")
 	if err := os.WriteFile(filepath.Join(options.directory, helperConfigFile), helperConfigBytes(t, config), 0o600); err != nil {
 		t.Fatal(err)
 	}
