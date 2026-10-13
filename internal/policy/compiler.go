@@ -61,6 +61,7 @@ type Grant struct {
 	Device       Endpoint      `json:"device"`
 	Peer         Endpoint      `json:"peer"`
 	PeerScope    *PeerScope    `json:"peer_scope,omitempty"`
+	Internet     bool          `json:"internet,omitempty"`
 	Protocol     string        `json:"protocol"`
 	Port         uint16        `json:"port"`
 	PortEnd      uint16        `json:"port_end,omitempty"`
@@ -97,10 +98,12 @@ type Candidate struct {
 
 // Compiler contains only an immutable, independently reviewed router baseline.
 type Compiler struct {
-	baseline Baseline
-	hash     string
-	internet []netip.Prefix
-	global4  []netip.Prefix
+	baseline         Baseline
+	hash             string
+	global4          []netip.Prefix
+	internetGeometry InternetGeometry
+	nativeExcluded   []netip.Prefix
+	scopeAliases     map[netip.Addr][]netip.Prefix
 }
 
 // New validates and copies configuration so the caller cannot mutate the floor.
@@ -128,9 +131,15 @@ func New(baseline Baseline) (*Compiler, error) {
 	hash := sha256.Sum256(data)
 	compiler := &Compiler{baseline: owned, hash: hex.EncodeToString(hash[:])}
 	compiler.global4 = compiler.publicIPv4Networks()
-	compiler.internet, err = compiler.calculateInternetNetworks()
-	if err != nil {
-		return nil, err
+	compiler.scopeAliases = compiler.indexScopeAliases()
+	compiler.nativeExcluded = compiler.internetExcludedNetworks()
+	compiler.internetGeometry = compiler.calculateInternetGeometry()
+	geometrySize := len(compiler.internetGeometry.Allowed) + len(compiler.internetGeometry.Excluded)
+	for _, block := range compiler.internetGeometry.Blocks {
+		geometrySize += len(block.Networks)
+	}
+	if geometrySize > 16384 {
+		return nil, errors.New("policy: shared Internet geometry quota exceeded")
 	}
 	return compiler, nil
 }
@@ -179,12 +188,13 @@ func (compiler *Compiler) CompileContext(ctx context.Context, input Input) (Cand
 		CompiledAt: input.Now, Grants: []Grant{}, Denials: []Denial{}, Ledger: ledger,
 	}
 	tupleCount := 0
+	groupCache := &directoryGroups{groups: groups, parsed: map[string]parsedGroup{}}
 	for _, device := range input.Directory.Devices {
 		if err := ctx.Err(); err != nil {
 			return Candidate{}, err
 		}
 		edits := ledgerEdits{ledger: &result.Ledger}
-		grants, code := compiler.compileDevice(ctx, device, groups, bindings[device.MAC], input, &edits)
+		grants, code := compiler.compileDevice(ctx, device, groupCache, bindings[device.MAC], input, &edits)
 		if err := ctx.Err(); err != nil {
 			return Candidate{}, err
 		}
@@ -203,7 +213,7 @@ func (compiler *Compiler) CompileContext(ctx context.Context, input Input) (Cand
 		}
 	}
 	result.Grants = mergeGrants(result.Grants)
-	if expandedTuples(result.Grants) > compiler.baseline.MaximumTuples {
+	if len(result.Grants) > compiler.baseline.MaximumTuples || expandedTuples(result.Grants) > compiler.baseline.MaximumTuples {
 		return Candidate{}, errors.New("policy: expanded router quota exceeded")
 	}
 	result.Ledger.LastValidated = input.Now
@@ -299,13 +309,13 @@ func (compiler *Compiler) validateDirectory(ctx context.Context, snapshot Direct
 	return groups, nil
 }
 
-func (compiler *Compiler) compileDevice(ctx context.Context, device Device, groups map[string]Group, record binding.Record,
+func (compiler *Compiler) compileDevice(ctx context.Context, device Device, groups *directoryGroups, record binding.Record,
 	input Input, edits *ledgerEdits,
 ) ([]Grant, string) {
 	if !device.Active {
 		return nil, "inactive_account"
 	}
-	placement, access, code := selectGroups(device, groups)
+	placement, access, code := selectGroups(ctx, device, groups)
 	if code != "" {
 		return nil, code
 	}
@@ -317,15 +327,11 @@ func (compiler *Compiler) compileDevice(ctx context.Context, device Device, grou
 	}
 	grants := []Grant{}
 	grantIndex := map[string]int{}
-	tupleCount := 0
 	for _, group := range access {
 		if ctx.Err() != nil {
 			return nil, "compilation_canceled"
 		}
-		document, err := ParseGroup(*group.Policy)
-		if err != nil { // selectGroups already checks this; do not trust that across refactors.
-			return nil, "malformed_group"
-		}
+		document := group.document
 		for _, rule := range document.Rules {
 			expires, err := edits.ruleExpiry(group.ID, rule, input, compiler.baseline.LeaseSeconds)
 			if err != nil {
@@ -339,9 +345,16 @@ func (compiler *Compiler) compileDevice(ctx context.Context, device Device, grou
 				if code != "" {
 					return nil, code
 				}
-				grants = append(grants, scoped...)
-				tupleCount += expandedTuples(scoped)
-				if tupleCount > compiler.baseline.MaximumTuples {
+				for _, grant := range scoped {
+					key := grantKey(grant)
+					if index, exists := grantIndex[key]; exists {
+						grants[index].Contributors = append(grants[index].Contributors, grant.Contributors...)
+					} else {
+						grantIndex[key] = len(grants)
+						grants = append(grants, grant)
+					}
+				}
+				if len(grants) > maximumIntermediateGrants {
 					return nil, "device_quota_exceeded"
 				}
 				continue
@@ -386,9 +399,8 @@ func (compiler *Compiler) compileDevice(ctx context.Context, device Device, grou
 						} else {
 							grantIndex[key] = len(grants)
 							grants = append(grants, grant)
-							tupleCount += expandedTuples([]Grant{grant})
 						}
-						if tupleCount > compiler.baseline.MaximumTuples {
+						if len(grants) > maximumIntermediateGrants {
 							return nil, "device_quota_exceeded"
 						}
 					}
@@ -396,19 +408,52 @@ func (compiler *Compiler) compileDevice(ctx context.Context, device Device, grou
 			}
 		}
 	}
-	normalized, err := compiler.normalizeScopeUnion(ctx, grants)
+	normalized, err := compiler.normalizeGrants(ctx, grants)
 	if err != nil {
 		return nil, "device_quota_exceeded"
 	}
 	return normalized, ""
 }
 
-func selectGroups(device Device, groups map[string]Group) (Role, []Group, string) {
+type parsedGroup struct {
+	Group
+	document  Document
+	malformed bool
+}
+
+// This cache belongs to one CompileContext call. Parsed documents are immutable
+// and errors remain device-level denials, not whole-directory parse failures.
+type directoryGroups struct {
+	groups map[string]Group
+	parsed map[string]parsedGroup
+}
+
+func (groups *directoryGroups) get(id string) (parsedGroup, bool) {
+	if group, exists := groups.parsed[id]; exists {
+		return group, true
+	}
+	raw, exists := groups.groups[id]
+	if !exists {
+		return parsedGroup{}, false
+	}
+	group := parsedGroup{Group: raw}
+	if raw.Policy != nil {
+		document, err := ParseGroup(*raw.Policy)
+		group.document, group.malformed = document, err != nil
+	}
+	groups.parsed[id] = group
+	return group, true
+}
+
+func selectGroups(ctx context.Context, device Device, groups *directoryGroups) (Role, []parsedGroup, string) {
 	placement, placements, networkCount := Unknown, 0, 0
-	access := []Group{}
+	access := []parsedGroup{}
 	seen := map[string]bool{}
 	for _, id := range device.GroupIDs {
-		group, exists := groups[id]
+		if ctx.Err() != nil {
+			return Unknown, nil, "compilation_canceled"
+		}
+		group, exists := groups.get(id)
 		if !exists || seen[id] {
 			return Unknown, nil, "missing_or_duplicate_membership"
 		}
@@ -420,10 +465,10 @@ func selectGroups(device Device, groups map[string]Group) (Role, []Group, string
 			continue
 		}
 		networkCount++
-		document, err := ParseGroup(*group.Policy)
-		if err != nil {
+		if group.malformed {
 			return Unknown, nil, "malformed_group"
 		}
+		document := group.document
 		if document.Kind == "placement" {
 			placement, placements = document.VLANRole, placements+1
 		} else {
@@ -434,12 +479,11 @@ func selectGroups(device Device, groups map[string]Group) (Role, []Group, string
 		return Unknown, nil, "ambiguous_placement_or_group_quota"
 	}
 	for _, group := range access {
-		document, err := ParseGroup(*group.Policy)
-		if err != nil || document.VLANRole != placement {
+		if group.document.VLANRole != placement {
 			return Unknown, nil, "conflicting_access_role"
 		}
 	}
-	slices.SortFunc(access, func(left, right Group) int { return cmp.Compare(left.ID, right.ID) })
+	slices.SortFunc(access, func(left, right parsedGroup) int { return cmp.Compare(left.ID, right.ID) })
 	return placement, access, ""
 }
 
@@ -469,6 +513,13 @@ func leaseDuration(baseline Baseline) time.Duration {
 func expandedTuples(grants []Grant) int {
 	count := 0
 	for _, grant := range grants {
+		if grant.Internet {
+			count += len(grant.Device.Variants)
+			if count > 16384 {
+				return 16385
+			}
+			continue
+		}
 		device4, device6, peer4, peer6 := 0, 0, 0, 0
 		for _, device := range grant.Device.Variants {
 			if device.Is4() {
@@ -538,6 +589,9 @@ func mergeGrants(grants []Grant) []Grant {
 
 func grantKey(grant Grant) string {
 	peer := grant.Peer.Real.String()
+	if grant.Internet {
+		peer = "internet"
+	}
 	if grant.PeerScope != nil {
 		peer = grant.PeerScope.Real.String()
 	}

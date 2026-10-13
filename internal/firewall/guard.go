@@ -35,6 +35,7 @@ type guardLayout struct {
 	controllerAliases []netip.Addr
 	translationPaths  []deviceTranslationPath
 	bootstrapPaths    []policy.BootstrapPath
+	internet          policy.InternetGeometry
 }
 
 func newGuardLayout(baseline policy.Baseline) (*guardLayout, error) {
@@ -64,11 +65,16 @@ func newGuardLayout(baseline policy.Baseline) (*guardLayout, error) {
 	slices.Sort(interfaces)
 	interfaces = slices.Compact(interfaces)
 	slices.Sort(managed)
+	compiler, err := policy.New(validated)
+	if err != nil {
+		return nil, err
+	}
 	return &guardLayout{
 		interfaces: interfaces, managedInterfaces: managed, controllers: controllerLegs(validated),
 		controllerAliases: controllerAliasIdentities(validated),
 		translationPaths:  deviceTranslationPaths(validated),
 		bootstrapPaths:    validated.BootstrapPaths,
+		internet:          compiler.InternetGeometry(),
 	}, nil
 }
 
@@ -83,6 +89,7 @@ func (layout *guardLayout) program(ctx context.Context) ([]byte, error) {
 	}
 	lines := []string{"table inet " + ownedTable + " {"}
 	lines = append(lines, permanentGuardSets()...)
+	lines = append(lines, layout.internetSetDefinitions()...)
 	for _, name := range grantSets {
 		addressType := "ipv6_addr"
 		if ipv4Set(name) {
@@ -96,6 +103,8 @@ func (layout *guardLayout) program(ctx context.Context) ([]byte, error) {
 	lines = append(lines, layout.translatedSetDefinitions("inet")...)
 	lines = append(lines, "chain guard_forward { type filter hook forward priority -150; policy accept;",
 		"meta mark set meta mark & "+guardMarkKeep)
+	blocked, _ := layout.internetBlockRules(false)
+	lines = append(lines, blocked...)
 	bootstrap, _ := layout.bootstrapForward("return")
 	lines = append(lines, bootstrap...)
 	lines = append(lines, layout.controllerForwardRules("return", false)...)
@@ -109,8 +118,9 @@ func (layout *guardLayout) program(ctx context.Context) ([]byte, error) {
 		// after its protected checks. A cross-table jump is not possible. This
 		// later base chain rechecks the actual lease inside our own table.
 		"chain guard_confirm { type filter hook forward priority 150; policy accept;",
-		"jump permit_flow",
 	)
+	lines = append(lines, blocked...)
+	lines = append(lines, "jump permit_flow")
 	for _, tag := range []string{fromOriginalTag, fromReplyTag, toOriginalTag, toReplyTag} {
 		// Keep the provisional tag until lookup succeeds. If another hook
 		// changed the tuple to an otherwise unclassified endpoint, a stale
@@ -134,6 +144,7 @@ func (layout *guardLayout) program(ctx context.Context) ([]byte, error) {
 	lines = append(lines, guardStampProgram()...)
 	lines = append(lines, "}", "table netdev "+ownedTable+" {",
 		fmt.Sprintf("set %s { type ether_addr; size %d; }", cohortSet, maximumCohortSize))
+	lines = append(lines, layout.internetSetDefinitions()...)
 	for _, name := range grantSets {
 		addressType := "ipv6_addr"
 		if ipv4Set(name) {
@@ -151,6 +162,10 @@ func (layout *guardLayout) program(ctx context.Context) ([]byte, error) {
 			index, name,
 		))
 		bootstrap, _ := layout.bootstrapEgress(name)
+		if slices.Contains(layout.managedInterfaces, name) {
+			blocked, _ := layout.internetBlockRules(true)
+			lines = append(lines, blocked...)
+		}
 		lines = append(lines, bootstrap...)
 		lines = append(lines, layout.controllerEgressRules(name)...)
 		translated, _ = layout.translatedEgress(name)
@@ -158,10 +173,16 @@ func (layout *guardLayout) program(ctx context.Context) ([]byte, error) {
 		for _, set := range grantSets {
 			_, incoming := guardTags(set)
 			family, protocol := guardProtocol(set)
+			peer := family + " saddr"
+			lookupPeer := peer
+			if internetSet(set) {
+				lookupPeer = internetWildcard(family)
+			}
 			lines = append(lines, fmt.Sprintf(
 				"meta l4proto %s meta mark & 0xff000000 == %s "+
-					"oifname . ether daddr . %s daddr . %s saddr . %s %s @%s return",
-				protocol, incoming, family, family, protocol, guardEgressListener(set), egressSet(set),
+					"%soifname . ether daddr . %s daddr . %s . %s %s @%s return",
+				protocol, incoming, internetPredicate(set, family, "saddr"), family, lookupPeer,
+				protocol, guardEgressListener(set), egressSet(set),
 			))
 		}
 		// A projected IP permit must not transfer to an unclassified new MAC.
@@ -221,7 +242,7 @@ func inboundSet(name string) string { return "inbound_" + name }
 func egressSet(name string) string  { return "egress_" + name }
 
 func guardEgressListener(name string) string {
-	if strings.HasPrefix(name, "lease_from") {
+	if fromSet(name) {
 		return "sport"
 	}
 	return "dport"
@@ -239,7 +260,7 @@ func guardProtocol(name string) (string, string) {
 }
 
 func guardTags(name string) (string, string) {
-	if strings.HasPrefix(name, "lease_from") {
+	if fromSet(name) {
 		return fromOriginalTag, fromReplyTag
 	}
 	return toReplyTag, toOriginalTag
@@ -251,18 +272,24 @@ func guardLookups(verdict string) []string {
 		family, protocol := guardProtocol(name)
 		outgoing, incoming := guardTags(name)
 		sourceDirection, targetDirection := "reply", "original"
-		if strings.HasPrefix(name, "lease_from") {
+		if fromSet(name) {
 			sourceDirection, targetDirection = "original", "reply"
+		}
+		destination, source := family+" daddr", family+" saddr"
+		if internetSet(name) {
+			destination, source = internetWildcard(family), internetWildcard(family)
 		}
 		lines = append(lines,
 			fmt.Sprintf("meta l4proto %s ct state { new, established } ct direction %s "+
-				"iifname . ether saddr . %s saddr . %s daddr . ct original proto-dst @%s "+
+				"%siifname . ether saddr . %s saddr . %s . ct original proto-dst @%s "+
 				"goto %s",
-				protocol, sourceDirection, family, family, name, guardStampChain(outgoing, verdict)),
+				protocol, sourceDirection, internetPredicate(name, family, "daddr"), family, destination,
+				name, guardStampChain(outgoing, verdict)),
 			fmt.Sprintf("meta l4proto %s ct state { new, established } ct direction %s "+
-				"oifname . %s daddr . %s saddr . ct original proto-dst @%s "+
+				"%soifname . %s daddr . %s . ct original proto-dst @%s "+
 				"goto %s",
-				protocol, targetDirection, family, family, inboundSet(name), guardStampChain(incoming, verdict)),
+				protocol, targetDirection, internetPredicate(name, family, "saddr"), family, source,
+				inboundSet(name), guardStampChain(incoming, verdict)),
 		)
 	}
 	return lines

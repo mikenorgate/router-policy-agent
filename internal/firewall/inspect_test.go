@@ -35,7 +35,7 @@ func listingFixtureObjects() []map[string]any {
 			"size": 16384, "flags": []string{"interval", "timeout"}, "timeout": 90,
 		}})
 	}
-	objects[len(objects)-2]["set"] = map[string]any{
+	objects[3+slices.Index(grantSets[:], "lease_to6_tcp")]["set"] = map[string]any{
 		"family": "inet", "table": ownedTable, "name": "lease_to6_tcp", "handle": 8,
 		"type": []string{"ifname", "ether_addr", "ipv6_addr", "ipv6_addr", "inet_service"},
 		"size": 16384, "flags": []string{"interval", "timeout"}, "timeout": 90,

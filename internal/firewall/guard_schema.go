@@ -3,6 +3,7 @@ package firewall
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -38,6 +39,15 @@ func (layout *guardLayout) schema(family string) (*guardTableSchema, error) {
 	if family == "inet" {
 		schema.sets[classified4Set] = guardSetHeader(family, classified4Set, "ipv4_addr", maximumTupleCount)
 		schema.sets[classified6Set] = guardSetHeader(family, classified6Set, "ipv6_addr", maximumTupleCount)
+	}
+	for name := range layout.internetPrefixSets() {
+		typeName := "ipv6_addr"
+		if strings.HasSuffix(name, "4") {
+			typeName = "ipv4_addr"
+		}
+		header := guardSetHeader(family, name, typeName, maximumTupleCount)
+		header["flags"] = []string{"interval"}
+		schema.sets[name] = header
 	}
 	for _, name := range grantSets {
 		address := "ipv6_addr"
@@ -79,7 +89,9 @@ func (layout *guardLayout) schema(family string) (*guardTableSchema, error) {
 		}
 		schema.chains["permit_flow"] = map[string]any{"family": family, "table": ownedTable, "name": "permit_flow"}
 		reset := []any{guardMark(guardBinary("&", guardMeta("mark"), numbers[guardMarkKeep]))}
-		schema.rules["guard_forward"] = append([][]any{reset},
+		_, blocked := layout.internetBlockRules(false)
+		schema.rules["guard_forward"] = append([][]any{reset}, blocked...)
+		schema.rules["guard_forward"] = append(schema.rules["guard_forward"],
 			layout.bootstrapForwardExpressions("return")...)
 		schema.rules["guard_forward"] = append(schema.rules["guard_forward"],
 			layout.controllerForwardExpressions("return", false)...)
@@ -89,7 +101,7 @@ func (layout *guardLayout) schema(family string) (*guardTableSchema, error) {
 			guardForwardExpressions("return")...)
 		schema.rules["guard_forward"] = append(schema.rules["guard_forward"], layout.controllerIdentityExpressions()...)
 		schema.rules["guard_forward"] = append(schema.rules["guard_forward"], guardClassificationExpressions()...)
-		schema.rules["guard_confirm"] = [][]any{{map[string]any{"jump": map[string]any{"target": "permit_flow"}}}}
+		schema.rules["guard_confirm"] = append(slices.Clone(blocked), []any{map[string]any{"jump": map[string]any{"target": "permit_flow"}}})
 		for _, tag := range []string{fromOriginalTag, fromReplyTag, toOriginalTag, toReplyTag} {
 			schema.rules["guard_confirm"] = append(schema.rules["guard_confirm"], []any{
 				guardMatch(guardBinary("&", guardMeta("mark"), uint64(0xff000000)), numbers[tag]),
@@ -116,7 +128,10 @@ func (layout *guardLayout) schema(family string) (*guardTableSchema, error) {
 			"family": family, "table": ownedTable, "name": name, "dev": device,
 			"type": "filter", "hook": "egress", "prio": 0, "policy": "accept",
 		}
-		rules := make([][]any, 0, len(grantSets)+3)
+		rules := [][]any{}
+		if slices.Contains(layout.managedInterfaces, device) {
+			_, rules = layout.internetBlockRules(true)
+		}
 		_, bootstrap := layout.bootstrapEgress(device)
 		rules = append(rules, bootstrap...)
 		rules = append(rules, layout.controllerEgressExpressions(device)...)
@@ -125,17 +140,23 @@ func (layout *guardLayout) schema(family string) (*guardTableSchema, error) {
 		for _, set := range grantSets {
 			_, incoming := guardTags(set)
 			address, protocol := guardProtocol(set)
+			var peer = guardPayload(address, "saddr")
+			if internetSet(set) {
+				peer = internetWildcard(address)
+			}
 			key := map[string]any{"concat": []any{
 				guardMeta("oifname"), guardPayload("ether", "daddr"),
-				guardPayload(address, "daddr"), guardPayload(address, "saddr"),
+				guardPayload(address, "daddr"), peer,
 				guardPayload(protocol, guardEgressListener(set)),
 			}}
-			rules = append(rules, []any{
+			checks := []any{
 				// nft canonicalizes the explicit protocol dependency into the
 				// typed transport-payload lookup in this netdev rule.
 				guardMatch(guardBinary("&", guardMeta("mark"), uint64(0xff000000)), numbers[incoming]),
-				guardMatch(key, "@"+egressSet(set)), map[string]any{"return": nil},
-			})
+			}
+			checks = append(checks, internetExpressions(set, address, "saddr")...)
+			checks = append(checks, guardMatch(key, "@"+egressSet(set)), map[string]any{"return": nil})
+			rules = append(rules, checks)
 		}
 		for _, tag := range []string{fromReplyTag, toOriginalTag} {
 			rules = append(rules, []any{
@@ -174,29 +195,34 @@ func guardForwardExpressions(verdict string) [][]any {
 		address, protocol := guardProtocol(name)
 		outgoing, incoming := guardTags(name)
 		sourceDirection, targetDirection := "reply", "original"
-		if strings.HasPrefix(name, "lease_from") {
+		if fromSet(name) {
 			sourceDirection, targetDirection = "original", "reply"
 		}
+		var destination, source = guardPayload(address, "daddr"), guardPayload(address, "saddr")
+		if internetSet(name) {
+			destination, source = internetWildcard(address), internetWildcard(address)
+		}
 		for _, flow := range []struct {
-			direction, set, tag string
-			key                 []any
+			direction, set, tag, peerField string
+			key                            []any
 		}{
-			{direction: sourceDirection, set: name, tag: outgoing, key: []any{
+			{direction: sourceDirection, set: name, tag: outgoing, peerField: "daddr", key: []any{
 				guardMeta("iifname"), guardPayload("ether", "saddr"),
-				guardPayload(address, "saddr"), guardPayload(address, "daddr"), guardListener(),
+				guardPayload(address, "saddr"), destination, guardListener(),
 			}},
-			{direction: targetDirection, set: inboundSet(name), tag: incoming, key: []any{
-				guardMeta("oifname"), guardPayload(address, "daddr"), guardPayload(address, "saddr"), guardListener(),
+			{direction: targetDirection, set: inboundSet(name), tag: incoming, peerField: "saddr", key: []any{
+				guardMeta("oifname"), guardPayload(address, "daddr"), source, guardListener(),
 			}},
 		} {
-			rules = append(rules, []any{
+			checks := []any{
 				guardMatch(guardMeta("l4proto"), protocol),
 				guardMatch(map[string]any{"ct": map[string]any{"key": "state"}},
 					map[string]any{"set": []string{"established", "new"}}),
 				guardMatch(map[string]any{"ct": map[string]any{"key": "direction"}}, flow.direction),
-				guardMatch(map[string]any{"concat": flow.key}, "@"+flow.set),
-				guardStampGoto(flow.tag, verdict),
-			})
+			}
+			checks = append(checks, internetExpressions(name, address, flow.peerField)...)
+			checks = append(checks, guardMatch(map[string]any{"concat": flow.key}, "@"+flow.set), guardStampGoto(flow.tag, verdict))
+			rules = append(rules, checks)
 		}
 	}
 	return rules

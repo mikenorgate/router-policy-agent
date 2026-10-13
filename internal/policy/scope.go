@@ -27,11 +27,16 @@ type scopeRegion struct {
 func (compiler *Compiler) compileScopeRule(ctx context.Context, device Device, record binding.Record,
 	groupID string, rule Rule, expires time.Time, input Input, edits *ledgerEdits,
 ) ([]Grant, string) {
+	if rule.Peer.Internet {
+		return compiler.compileInternetRule(ctx, device, record, groupID, rule, expires, input)
+	}
 	selected, code := compiler.selectScopePeers(rule, groupID, edits)
 	if code != "" {
 		return nil, code
 	}
 	grants := []Grant{}
+	tupleCount := 0
+	ranges := portRanges(rule)
 	for _, address := range record.Addresses {
 		endpoint, err := resolveEndpoint(compiler.baseline, address.IP)
 		if err != nil || endpoint.Real != address.IP {
@@ -41,7 +46,7 @@ func (compiler *Compiler) compileScopeRule(ctx context.Context, device Device, r
 			record.AssociatedAt.Add(leaseDuration(compiler.baseline)),
 			address.ObservedAt.Add(leaseDuration(compiler.baseline)), address.ValidUntil)
 		for _, network := range selected {
-			for _, ports := range portRanges(rule) {
+			for _, ports := range ranges {
 				regions, err := compiler.clipScope(ctx, network, ports, device.MAC, address.IP, rule)
 				if err != nil {
 					return nil, "device_quota_exceeded"
@@ -54,7 +59,8 @@ func (compiler *Compiler) compileScopeRule(ctx context.Context, device Device, r
 						Protocol: rule.Protocol, Port: region.ports.First, PortEnd: region.ports.Last,
 						Contributors: []Contributor{{GroupID: groupID, RuleID: rule.ID, ExpiresAt: deadline}},
 					})
-					if len(grants) > compiler.baseline.MaximumTuples || expandedTuples(grants) > compiler.baseline.MaximumTuples {
+					tupleCount += expandedTuples(grants[len(grants)-1:])
+					if len(grants) > compiler.baseline.MaximumTuples || tupleCount > compiler.baseline.MaximumTuples {
 						return nil, "device_quota_exceeded"
 					}
 				}
@@ -69,10 +75,7 @@ func (compiler *Compiler) compileScopeRule(ctx context.Context, device Device, r
 
 func (compiler *Compiler) selectScopePeers(rule Rule, groupID string, edits *ledgerEdits) ([]netip.Prefix, string) {
 	if rule.Peer.Internet {
-		if rule.Direction != FromDevice {
-			return nil, "P09_unsolicited_wan"
-		}
-		return compiler.internetNetworks(), ""
+		return nil, "compact_internet_required"
 	}
 	if len(rule.Peer.Zones) != 0 {
 		result := []netip.Prefix{}
@@ -126,7 +129,11 @@ func (compiler *Compiler) clipScope(ctx context.Context, network netip.Prefix, p
 		}
 	}
 	if rule.Direction == FromDevice {
-		allowed = append(allowed, compiler.internetNetworks()...)
+		internet, err := compiler.nativeInternetNetworks(ctx, network)
+		if err != nil {
+			return nil, err
+		}
+		allowed = append(allowed, internet...)
 	}
 	allowed = canonicalPrefixes(allowed)
 	regions := []scopeRegion{}

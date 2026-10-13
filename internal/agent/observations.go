@@ -33,12 +33,25 @@ func (engine *Engine) rememberProvenance(candidate policy.Candidate, directory p
 	}
 	report := ipc.ObservationSnapshot{SchemaVersion: 1, BaselineHash: candidate.BaselineHash, BaselineGeneration: engine.observation.report.BaselineGeneration, BindingGeneration: candidate.BindingGeneration, CompiledAt: candidate.CompiledAt, DirectoryObservedAt: directory.ObservedAt, Mode: string(engine.options.Mode), Complete: len(candidate.Grants) <= ipc.MaximumObservationGrants, Total: len(candidate.Grants), Grants: []ipc.ObservationGrant{}}
 	residentBytes := 0
+	// Index once: a shared prefix grant must not rescan the whole device catalog.
+	bindingsByMAC := make(map[string]binding.Record, len(bindings.Records))
+	for _, record := range bindings.Records {
+		bindingsByMAC[record.MAC] = record
+	}
 	for _, g := range candidate.Grants[:min(len(candidate.Grants), ipc.MaximumObservationGrants)] {
 		grant := ipc.ObservationGrant{DeviceID: g.DeviceID, MAC: g.MAC, Interface: g.Interface, VLAN: g.VLAN, DeviceAddress: g.Device.Real.String(), PeerAddress: g.Peer.Real.String(), Direction: string(g.Direction), Protocol: g.Protocol, Port: g.Port, DeviceVariants: []string{}, PeerVariants: []string{}, Contributors: []ipc.ObservationContributor{}}
-		for _, b := range bindings.Records {
-			if b.MAC != g.MAC || b.Interface != g.Interface || b.VLAN != g.VLAN {
-				continue
+		grant.Internet, grant.PortEnd = g.Internet, g.PortEnd
+		if g.Internet || g.PeerScope != nil {
+			grant.PeerAddress = ""
+		}
+		if g.PeerScope != nil {
+			grant.PeerNetwork = g.PeerScope.Real.String()
+			grant.PeerNetworkVariants = make([]string, 0, len(g.PeerScope.Variants))
+			for _, prefix := range g.PeerScope.Variants {
+				grant.PeerNetworkVariants = append(grant.PeerNetworkVariants, prefix.String())
 			}
+		}
+		if b, found := bindingsByMAC[g.MAC]; found && b.Interface == g.Interface && b.VLAN == g.VLAN {
 			grant.AssociatedAt = b.AssociatedAt
 			for _, address := range b.Addresses {
 				if address.IP == g.Device.Real {
@@ -50,7 +63,6 @@ func (engine *Engine) rememberProvenance(candidate policy.Candidate, directory p
 					break
 				}
 			}
-			break
 		}
 		for _, a := range g.Device.Variants {
 			grant.DeviceVariants = append(grant.DeviceVariants, a.String())
@@ -101,6 +113,7 @@ func (engine *Engine) Observations(ctx context.Context, request ipc.ObservationR
 	for i := range out.Grants {
 		out.Grants[i].DeviceVariants = slices.Clone(out.Grants[i].DeviceVariants)
 		out.Grants[i].PeerVariants = slices.Clone(out.Grants[i].PeerVariants)
+		out.Grants[i].PeerNetworkVariants = slices.Clone(out.Grants[i].PeerNetworkVariants)
 		out.Grants[i].Contributors = slices.Clone(out.Grants[i].Contributors)
 	}
 	response := ipc.ObservationResponse{Snapshot: &out}

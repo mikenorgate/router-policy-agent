@@ -95,7 +95,7 @@ func verifySetInventory(ctx context.Context, data []byte) (*setInventory, error)
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
-			key, err := verifyListedTuple(rawElement, ipv4Set(set.Name))
+			key, err := verifyListedGrantTuple(rawElement, ipv4Set(set.Name), internetSet(set.Name))
 			if err != nil {
 				return nil, err
 			}
@@ -252,7 +252,7 @@ func decodeListedSet(raw json.RawMessage) (listedSet, error) {
 	return set, nil
 }
 
-func verifyListedTuple(raw json.RawMessage, ipv4 bool) (tupleKey, error) {
+func verifyListedGrantTuple(raw json.RawMessage, ipv4, internet bool) (tupleKey, error) {
 	var element struct {
 		Value   json.RawMessage `json:"val"`
 		Timeout int             `json:"timeout"`
@@ -272,7 +272,7 @@ func verifyListedTuple(raw json.RawMessage, ipv4 bool) (tupleKey, error) {
 	if element.Expires > uint64(element.Timeout) {
 		return tupleKey{}, errors.New("firewall: listed lease expiry exceeds its lifetime")
 	}
-	return validateTuple(element.Value, ipv4)
+	return validateTupleScope(element.Value, ipv4, internet)
 }
 
 // checkReplacement requires a verified inventory and a separately validated
@@ -324,7 +324,7 @@ func (inventory *setInventory) checkReplacement(ctx context.Context, data []byte
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			key, err := validateLeasedTuple(raw, ipv4Set(command.Add.Element.Name))
+			key, err := validateGrantTuple(raw, command.Add.Element.Name)
 			if err != nil {
 				return err
 			}

@@ -158,7 +158,7 @@ func (inventory *guardInventory) checkInterfaces(ctx context.Context, commands [
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			key, err := validateLeasedTuple(raw, ipv4Set(command.Add.Element.Name))
+			key, err := validateGrantTuple(raw, command.Add.Element.Name)
 			if err != nil {
 				return err
 			}

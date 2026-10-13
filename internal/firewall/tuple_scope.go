@@ -21,9 +21,12 @@ func tupleHost(raw string, ipv4 bool) (netip.Addr, error) {
 	return policy.ParseHost(netip.PrefixFrom(address, address.BitLen()).String())
 }
 
-func tuplePeer(raw json.RawMessage, ipv4 bool) (netip.Addr, netip.Prefix, error) {
+func tuplePeerScope(raw json.RawMessage, ipv4, internet bool) (netip.Addr, netip.Prefix, error) {
 	var host string
 	if err := json.Unmarshal(raw, &host); err == nil {
+		if internet {
+			return netip.Addr{}, netip.Prefix{}, errors.New("firewall: Internet tuple must use its fixed wildcard")
+		}
 		address, err := tupleHost(host, ipv4)
 		return address, netip.Prefix{}, err
 	}
@@ -38,7 +41,7 @@ func tuplePeer(raw json.RawMessage, ipv4 bool) (netip.Addr, netip.Prefix, error)
 	network := netip.PrefixFrom(address, value.Bits)
 	if err != nil || address.Is4() != ipv4 || address.Is4In6() || address.Zone() != "" ||
 		address.String() != value.Address || !network.IsValid() || network != network.Masked() ||
-		value.Bits < 1 || value.Bits >= address.BitLen() {
+		value.Bits < 0 || value.Bits >= address.BitLen() || (value.Bits == 0) != internet {
 		return netip.Addr{}, netip.Prefix{}, errors.New("firewall: canonical non-host peer prefix required")
 	}
 	return address, network, nil
@@ -115,7 +118,7 @@ func validateDisjointTuples(keys []tupleKey) error {
 			}
 		}
 		for network, ports := range networks {
-			for bits := 1; bits < network.Bits(); bits++ {
+			for bits := 0; bits < network.Bits(); bits++ {
 				ancestors := networks[netip.PrefixFrom(network.Addr(), bits).Masked()]
 				for _, port := range ports {
 					index, _ := slices.BinarySearchFunc(ancestors, port.first,

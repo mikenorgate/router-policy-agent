@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/netip"
 	"regexp"
+	"strings"
 
 	"github.com/mikenorgate/router-policy-agent/internal/policy"
 	"github.com/mikenorgate/router-policy-agent/internal/strictjson"
@@ -25,6 +26,7 @@ var interfaceName = regexp.MustCompile(`^[a-zA-Z0-9_.:-]{1,15}$`)
 var grantSets = [...]string{
 	"lease_from4_tcp", "lease_from4_udp", "lease_to4_tcp", "lease_to4_udp",
 	"lease_from6_tcp", "lease_from6_udp", "lease_to6_tcp", "lease_to6_udp",
+	"internet_from4_tcp", "internet_from4_udp", "internet_from6_tcp", "internet_from6_udp",
 }
 
 type objectReference struct {
@@ -134,7 +136,7 @@ func validateBatch(data []byte) error {
 		}
 		keys := make([]tupleKey, 0, len(values.Values))
 		for _, value := range values.Values {
-			key, err := validateLeasedTuple(value, ipv4Set(ref.Name))
+			key, err := validateGrantTuple(value, ref.Name)
 			if err != nil {
 				return err
 			}
@@ -188,8 +190,17 @@ func isGrantSet(name string) bool {
 }
 
 func ipv4Set(name string) bool {
+	name = strings.TrimPrefix(name, "internet_")
 	return name == "lease_from4_tcp" || name == "lease_from4_udp" ||
-		name == "lease_to4_tcp" || name == "lease_to4_udp"
+		name == "lease_to4_tcp" || name == "lease_to4_udp" || name == "from4_tcp" || name == "from4_udp"
+}
+
+func internetSet(name string) bool { return strings.HasPrefix(name, "internet_from") }
+
+func fromSet(name string) bool { return strings.HasPrefix(name, "lease_from") || internetSet(name) }
+
+func validateGrantTuple(raw json.RawMessage, name string) (tupleKey, error) {
+	return validateLease(raw, ipv4Set(name), internetSet(name))
 }
 
 func validateMACs(raw []json.RawMessage) error {
@@ -209,6 +220,10 @@ func validateMACs(raw []json.RawMessage) error {
 }
 
 func validateLeasedTuple(raw json.RawMessage, ipv4 bool) (tupleKey, error) {
+	return validateLease(raw, ipv4, false)
+}
+
+func validateLease(raw json.RawMessage, ipv4, internet bool) (tupleKey, error) {
 	var element struct {
 		Value   json.RawMessage `json:"val"`
 		Timeout int             `json:"timeout"`
@@ -228,10 +243,14 @@ func validateLeasedTuple(raw json.RawMessage, ipv4 bool) (tupleKey, error) {
 	if element.Timeout < 1 || element.Timeout > maximumElementLifetime {
 		return tupleKey{}, errors.New("firewall: invalid bounded element lifetime")
 	}
-	return validateTuple(element.Value, ipv4)
+	return validateTupleScope(element.Value, ipv4, internet)
 }
 
 func validateTuple(value json.RawMessage, ipv4 bool) (tupleKey, error) {
+	return validateTupleScope(value, ipv4, false)
+}
+
+func validateTupleScope(value json.RawMessage, ipv4, internet bool) (tupleKey, error) {
 	if err := strictjson.Object(
 		value,
 		[]string{"concat"},
@@ -263,7 +282,7 @@ func validateTuple(value json.RawMessage, ipv4 bool) (tupleKey, error) {
 	if err != nil {
 		return tupleKey{}, err
 	}
-	peer, network, err := tuplePeer(tuple.Values[3], ipv4)
+	peer, network, err := tuplePeerScope(tuple.Values[3], ipv4, internet)
 	if err != nil {
 		return tupleKey{}, err
 	}

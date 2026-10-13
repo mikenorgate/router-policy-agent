@@ -276,11 +276,11 @@ func inspectSealingGuards(
 	if err != nil {
 		return nil, empty, err
 	}
-	inet, err := layout.inspectTable(ctx, "inet", guards.inet)
+	inet, err := layout.inspectTableGeometry(ctx, "inet", guards.inet, false)
 	if err != nil {
 		return nil, empty, err
 	}
-	netdev, err := layout.inspectTable(ctx, "netdev", guards.netdev)
+	netdev, err := layout.inspectTableGeometry(ctx, "netdev", guards.netdev, false)
 	if err != nil {
 		return nil, empty, err
 	}

@@ -1,21 +1,14 @@
 package policy
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"net/netip"
 	"slices"
 )
 
-// The Internet selector is deliberately narrower than "has a default route".
-// Configured internal GUAs, translator aliases, private and special-use space
-// are excluded before any representation is generated.
-func (compiler *Compiler) internetNetworks() []netip.Prefix {
-	return compiler.internet
-}
-
-func (compiler *Compiler) calculateInternetNetworks() ([]netip.Prefix, error) {
-	networks := append(slices.Clone(compiler.global4), netip.MustParsePrefix("2000::/3"))
+func (compiler *Compiler) internetExcludedNetworks() []netip.Prefix {
 	excluded := compiler.nonNativeNetworks()
 	excluded = append(excluded, privateIPv4...)
 	excluded = append(excluded, nonGlobalIPv4...)
@@ -29,9 +22,24 @@ func (compiler *Compiler) calculateInternetNetworks() ([]netip.Prefix, error) {
 	for _, block := range compiler.baseline.ProtectedEndpoints {
 		excluded = append(excluded, block.Networks...)
 	}
-	for _, prefix := range excluded {
+	return canonicalPrefixes(excluded)
+}
+
+// Explicit CIDR grants only materialize cutouts inside their selected network.
+// Internet selectors use shared exclusions and never take this expansion path.
+func (compiler *Compiler) nativeInternetNetworks(ctx context.Context, selected netip.Prefix) ([]netip.Prefix, error) {
+	networks := []netip.Prefix{}
+	for _, native := range prefixesOf("0.0.0.0/0", "2000::/3") {
+		if intersection, ok := intersectPrefix(selected, native); ok {
+			networks = append(networks, intersection)
+		}
+	}
+	for _, prefix := range compiler.nativeExcluded {
 		next := []netip.Prefix{}
 		for _, network := range networks {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			next = append(next, subtractPrefix(network, prefix)...)
 			if len(next) > maximumScopeFragments {
 				return nil, errors.New("policy: internet geometry fragmentation quota exceeded")
@@ -114,20 +122,34 @@ func (compiler *Compiler) resolveScope(network netip.Prefix) PeerScope {
 			}
 		}
 	} else {
-		for _, mapping := range compiler.baseline.NAT46 {
-			if !mapping.Ready || !network.Contains(mapping.Target) {
-				continue
-			}
-			endpoint, err := resolveEndpoint(compiler.baseline, mapping.Target)
-			if err != nil {
-				continue
-			}
-			for _, variant := range endpoint.Variants {
-				if variant != mapping.Target {
-					variants = append(variants, netip.PrefixFrom(variant, variant.BitLen()))
-				}
+		for target, aliases := range compiler.scopeAliases {
+			if network.Contains(target) {
+				variants = append(variants, aliases...)
 			}
 		}
 	}
 	return PeerScope{Real: network, Variants: canonicalPrefixes(variants)}
+}
+
+// Derive each installed alias once, not once per matching target/alias pair.
+// Mapping readiness and translator eligibility are already baseline-validated.
+func (compiler *Compiler) indexScopeAliases() map[netip.Addr][]netip.Prefix {
+	aliases := map[netip.Addr][]netip.Prefix{}
+	for _, mapping := range compiler.baseline.NAT46 {
+		if !mapping.Ready {
+			continue
+		}
+		variants := aliases[mapping.Target]
+		variants = append(variants, netip.PrefixFrom(mapping.Alias, 32))
+		for _, translator := range compiler.baseline.NAT64 {
+			if eligible(translator, mapping.Alias) {
+				variants = append(variants, netip.PrefixFrom(embed(translator.Prefix, mapping.Alias), 128))
+			}
+		}
+		aliases[mapping.Target] = variants
+	}
+	for target, variants := range aliases {
+		aliases[target] = canonicalPrefixes(variants)
+	}
+	return aliases
 }

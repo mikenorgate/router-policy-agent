@@ -99,7 +99,7 @@ func classifyGuardChanges(
 			if err := ctx.Err(); err != nil {
 				return guardChanges{}, err
 			}
-			tuple, err := validateLeasedTuple(raw, ipv4Set(value.Name))
+			tuple, err := validateGrantTuple(raw, value.Name)
 			if err != nil {
 				return guardChanges{}, err
 			}

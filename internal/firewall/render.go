@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/netip"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/mikenorgate/router-policy-agent/internal/policy"
@@ -104,6 +105,9 @@ func (renderer *renderer) prepare(ctx context.Context, input replacement) (*prep
 		}
 		compatible := false
 		peers := grantPeerNetworks(grant)
+		if grant.Internet {
+			peers = []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0")}
+		}
 		for _, device := range grant.Device.Variants {
 			for _, peer := range peers {
 				if device.Is4() != peer.Addr().Is4() {
@@ -120,6 +124,9 @@ func (renderer *renderer) prepare(ctx context.Context, input replacement) (*prep
 					key.portEnd = grant.PortEnd
 				}
 				name := grantSet(grant.Direction, grant.Protocol, device.Is4())
+				if grant.Internet {
+					name = strings.Replace(name, "lease_", "internet_", 1)
+				}
 				tuples[name][key] = max(tuples[name][key], remaining)
 			}
 		}

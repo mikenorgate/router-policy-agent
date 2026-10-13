@@ -142,7 +142,7 @@ func expandGuardBatchWithClassification(
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
-			tuple, err := validateLeasedTuple(raw, ipv4Set(values.Name))
+			tuple, err := validateGrantTuple(raw, values.Name)
 			if err != nil {
 				return nil, err
 			}

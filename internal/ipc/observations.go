@@ -30,9 +30,13 @@ type ObservationGrant struct {
 	DeviceVariants      []string                 `json:"device_variants"`
 	PeerAddress         string                   `json:"peer_address"`
 	PeerVariants        []string                 `json:"peer_variants"`
+	PeerNetwork         string                   `json:"peer_network,omitempty"`
+	PeerNetworkVariants []string                 `json:"peer_network_variants,omitempty"`
+	Internet            bool                     `json:"internet,omitempty"`
 	Direction           string                   `json:"direction"`
 	Protocol            string                   `json:"protocol"`
 	Port                uint16                   `json:"port"`
+	PortEnd             uint16                   `json:"port_end,omitempty"`
 	Contributors        []ObservationContributor `json:"contributors"`
 }
 

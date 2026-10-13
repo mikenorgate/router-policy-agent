@@ -58,7 +58,11 @@ func (compiler *Compiler) checkGrant(ctx context.Context, grant Grant, compiledA
 		return errors.New("policy: candidate grant differs from untrusted geometry")
 	}
 	endpoints := []Endpoint{grant.Device}
-	if grant.PeerScope == nil {
+	if grant.Internet {
+		if err := compiler.checkInternetGrant(grant); err != nil {
+			return err
+		}
+	} else if grant.PeerScope == nil {
 		if grant.PortEnd != 0 {
 			return errors.New("policy: exact grant has interval fields")
 		}
@@ -72,7 +76,7 @@ func (compiler *Compiler) checkGrant(ctx context.Context, grant Grant, compiledA
 			return errors.New("policy: candidate counterpart set differs")
 		}
 	}
-	if grant.PeerScope == nil {
+	if !grant.Internet && grant.PeerScope == nil {
 		flow := floorFlow{
 			mac: grant.MAC, placement: Untrusted, device: grant.Device.Real, peer: grant.Peer.Real, port: grant.Port,
 			rule: Rule{Direction: grant.Direction, Protocol: grant.Protocol},
@@ -92,6 +96,19 @@ func (compiler *Compiler) checkGrant(ctx context.Context, grant Grant, compiledA
 		if !validIdentity || !validDeadline {
 			return errors.New("policy: candidate contributor identity or deadline invalid")
 		}
+	}
+	return nil
+}
+
+func (compiler *Compiler) checkInternetGrant(grant Grant) error {
+	invalidPeer := grant.Peer.Real.IsValid() || len(grant.Peer.Variants) != 0 || grant.PeerScope != nil
+	if grant.Direction != FromDevice || invalidPeer || grant.PortEnd < grant.Port {
+		return errors.New("policy: invalid Internet grant geometry")
+	}
+	ports := PortRange{First: grant.Port, Last: grant.PortEnd}
+	allowed := compiler.internetDevicePorts(grant.MAC, grant.Device.Real, grant.Protocol, []PortRange{ports})
+	if len(allowed) != 1 || allowed[0] != ports {
+		return errors.New("policy: Internet grant violates protected floor")
 	}
 	return nil
 }

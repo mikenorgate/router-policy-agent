@@ -1,9 +1,11 @@
 package policy
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"net/netip"
+	"slices"
 )
 
 type scopeUnionKey struct {
@@ -29,7 +31,6 @@ func (compiler *Compiler) normalizeScopeUnion(ctx context.Context, grants []Gran
 		return mergeGrants(grants), nil
 	}
 	groups := map[scopeUnionKey][]Grant{}
-	count := 0
 	for _, grant := range grants {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -41,24 +42,68 @@ func (compiler *Compiler) normalizeScopeUnion(ctx context.Context, grants []Gran
 		}
 		key := scopeUnionKey{deviceID: grant.DeviceID, mac: grant.MAC, iface: grant.Interface, vlan: grant.VLAN,
 			device: grant.Device.Real, direction: grant.Direction, protocol: grant.Protocol}
-		previous := groups[key]
-		combined, err := compiler.addScopeUnion(ctx, previous, grant)
+		groups[key] = append(groups[key], grant)
+	}
+	result := make([]Grant, 0, len(grants))
+	for _, group := range groups {
+		combined, err := compiler.normalizeScopeGroup(ctx, group)
 		if err != nil {
 			return nil, err
 		}
-		count += len(combined) - len(previous)
-		if count > compiler.baseline.MaximumTuples {
+		result = append(result, combined...)
+		if len(result) > compiler.baseline.MaximumTuples {
 			return nil, errors.New("policy: scope union fragmentation quota exceeded")
 		}
-		groups[key] = combined
-	}
-	result := make([]Grant, 0, count)
-	for _, grants := range groups {
-		result = append(result, grants...)
 	}
 	result = mergeGrants(result)
 	if expandedTuples(result) > compiler.baseline.MaximumTuples {
 		return nil, errors.New("policy: scope union expanded quota exceeded")
+	}
+	return result, ctx.Err()
+}
+
+// Sorted CIDRs form disjoint connected components: inside each component the
+// first (widest) prefix contains every other prefix. Disjoint components need
+// no pairwise comparisons, while overlapping geometry keeps the checked union.
+func (compiler *Compiler) normalizeScopeGroup(ctx context.Context, grants []Grant) ([]Grant, error) {
+	slices.SortFunc(grants, func(left, right Grant) int {
+		return cmp.Or(left.PeerScope.Real.Addr().Compare(right.PeerScope.Real.Addr()),
+			cmp.Compare(left.PeerScope.Real.Bits(), right.PeerScope.Real.Bits()))
+	})
+	result := make([]Grant, 0, len(grants))
+	for first := 0; first < len(grants); {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		last := first + 1
+		anchor := grants[first].PeerScope.Real
+		samePrefix := true
+		for last < len(grants) && anchor.Overlaps(grants[last].PeerScope.Real) {
+			samePrefix = samePrefix && grants[last].PeerScope.Real == anchor
+			last++
+		}
+		component := grants[first:last]
+		combined := component[:1]
+		if len(component) > 1 && samePrefix {
+			var err error
+			combined, err = normalizeListenerUnion(ctx, component)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			for _, grant := range component[1:] {
+				var err error
+				combined, err = compiler.addScopeUnion(ctx, combined, grant)
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
+		result = append(result, combined...)
+		if len(result) > compiler.baseline.MaximumTuples {
+			return nil, errors.New("policy: scope union fragmentation quota exceeded")
+		}
+		first = last
 	}
 	return result, ctx.Err()
 }

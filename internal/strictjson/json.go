@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"unicode/utf8"
 )
 
@@ -21,15 +20,17 @@ func Decode(data []byte, target any, limit int) error {
 	if !utf8.Valid(data) {
 		return errors.New("strictjson: invalid utf-8")
 	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
-	if err := scan(decoder, 0); err != nil {
+	if !json.Valid(data) {
+		return errors.New("strictjson: invalid structure")
+	}
+	// Let encoding/json validate the grammar once. A structural walk then
+	// checks the additional trust-boundary constraints without allocating a
+	// Decoder.Token value for every string, number and delimiter.
+	scanner := structureScanner{data: data}
+	if err := scanner.value(0); err != nil {
 		return fmt.Errorf("strictjson: invalid structure: %w", err)
 	}
-	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
-		return errors.New("strictjson: trailing input")
-	}
-	decoder = json.NewDecoder(bytes.NewReader(data))
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		// Do not reproduce attacker-controlled keys or values in diagnostics.
@@ -67,52 +68,104 @@ func Object(data []byte, required, optional []string, limit int) error {
 	return nil
 }
 
-func scan(decoder *json.Decoder, depth int) error {
+// structureScanner only visits input already accepted by json.Valid. It does
+// not implement JSON grammar or decode values; the standard decoder retains
+// responsibility for both syntax and mapping into the caller's schema.
+type structureScanner struct {
+	data   []byte
+	offset int
+}
+
+func (s *structureScanner) value(depth int) error {
 	if depth > maximumDepth {
 		return errors.New("nesting limit exceeded")
 	}
-	token, err := decoder.Token()
-	if err != nil {
-		return errors.New("invalid token")
-	}
-	delimiter, isDelimiter := token.(json.Delim)
-	if !isDelimiter {
-		return nil
-	}
-	switch delimiter {
+	s.whitespace()
+	switch s.data[s.offset] {
 	case '{':
+		s.offset++
+		s.whitespace()
 		seen := map[string]bool{}
-		for decoder.More() {
-			keyToken, err := decoder.Token()
-			if err != nil {
-				return errors.New("invalid object key")
+		for s.data[s.offset] != '}' {
+			start := s.offset
+			escaped := s.string()
+			key := string(s.data[start+1 : s.offset-1])
+			if escaped {
+				// Use the standard decoder to canonicalize JSON escapes,
+				// including surrogate pairs and unpaired-surrogate replacement.
+				if err := json.Unmarshal(s.data[start:s.offset], &key); err != nil {
+					return errors.New("invalid object key")
+				}
 			}
-			key, isString := keyToken.(string)
-			if !isString || seen[key] {
+			if seen[key] {
 				return errors.New("duplicate or invalid object key")
 			}
 			seen[key] = true
-			if err := scan(decoder, depth+1); err != nil {
+			s.whitespace()
+			s.offset++ // Colon; grammar was checked by json.Valid.
+			if err := s.value(depth + 1); err != nil {
 				return err
 			}
+			s.whitespace()
+			if s.data[s.offset] == ',' {
+				s.offset++
+				s.whitespace()
+			}
 		}
+		s.offset++
 	case '[':
-		for decoder.More() {
-			if err := scan(decoder, depth+1); err != nil {
+		s.offset++
+		s.whitespace()
+		for s.data[s.offset] != ']' {
+			if err := s.value(depth + 1); err != nil {
 				return err
 			}
+			s.whitespace()
+			if s.data[s.offset] == ',' {
+				s.offset++
+				s.whitespace()
+			}
 		}
+		s.offset++
+	case '"':
+		s.string()
 	default:
-		return errors.New("unexpected delimiter")
-	}
-	closing, err := decoder.Token()
-	if err != nil {
-		return errors.New("invalid closing delimiter")
-	}
-	isObjectEnd := delimiter == '{' && closing == json.Delim('}')
-	isArrayEnd := delimiter == '[' && closing == json.Delim(']')
-	if !isObjectEnd && !isArrayEnd {
-		return errors.New("unmatched delimiter")
+		// Numbers and literals cannot contain delimiters or whitespace.
+		for s.offset < len(s.data) {
+			switch s.data[s.offset] {
+			case ',', '}', ']', ' ', '\t', '\r', '\n':
+				return nil
+			}
+			s.offset++
+		}
 	}
 	return nil
+}
+
+func (s *structureScanner) whitespace() {
+	for s.offset < len(s.data) {
+		switch s.data[s.offset] {
+		case ' ', '\t', '\r', '\n':
+			s.offset++
+		default:
+			return
+		}
+	}
+}
+
+func (s *structureScanner) string() bool {
+	escaped := false
+	s.offset++ // Opening quote.
+	for {
+		switch s.data[s.offset] {
+		case '\\':
+			escaped = true
+			s.offset += 2
+		case '"':
+			s.offset++
+			return escaped
+		default:
+			s.offset++
+		}
+	}
 }

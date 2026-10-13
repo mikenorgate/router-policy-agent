@@ -5,12 +5,41 @@ The runtime has three Linux/amd64 packages: `router-policy-collector`,
 executable and MIT license. There are no service units, accounts, credentials,
 site configuration, maintainer scripts or automatic firewall changes.
 
+## v0.3.0 compatibility
+
+Internet permissions now use expiring device/listener entries and shared,
+image-owned public-address eligibility and exclusion sets. An all-port rule
+needs at most two TCP or three UDP listener spans per bound address, rather
+than a copy of every allowed public subnet. Internal GUA, special-use ranges,
+protected destinations and translated counterparts remain excluded. Conditional
+retained blocks still apply to the specified device and role.
+
+This changes the generated guard-object contract. Re-render the guards with
+the v0.3.0 helper, rebuild and independently audit the pinned router profile,
+and deploy the helper with that matching image. Replacing only the executable
+in an older image will fail guard inspection. Preserve durable deny history;
+the upgrade must not reset it or restore old permissions. Roll back the helper
+and image contract together.
+
+Directory policy schemas and helper request formats are unchanged. Read-only
+observations add optional `internet`, `peer_network`, `peer_network_variants`
+and `port_end` fields so consumers can distinguish selectors and listener
+intervals from exact hosts. Broad internal CIDR permissions still use bounded
+protected-service cutouts; this release does not remove those restrictions.
+
+Shared-group parsing, NAT46 counterpart resolution, disjoint CIDR union and
+JSON validation avoid repeated work. Scoped quotas count the final union, with
+a separate bound on intermediate work. The changes add no dependencies and
+do not increase request, preparation or permission-lifetime limits.
+
+## Building the packages
+
 Build all three from the same clean commit, version and patched toolchain:
 
 ```sh
-python3 packaging/build-collector.py --version 0.1.0 --command router-policy-collector --output /tmp/policy-collector-release
-python3 packaging/build-collector.py --version 0.1.0 --command router-policy-reader --output /tmp/policy-reader-release
-python3 packaging/build-collector.py --version 0.1.0 --command router-policy-helper --output /tmp/policy-helper-release
+python3 packaging/build-collector.py --version 0.3.0 --command router-policy-collector --output /tmp/policy-collector-release
+python3 packaging/build-collector.py --version 0.3.0 --command router-policy-reader --output /tmp/policy-reader-release
+python3 packaging/build-collector.py --version 0.3.0 --command router-policy-helper --output /tmp/policy-helper-release
 ```
 
 The builder requires Go 1.26.9+ or 1.27.2+, govulncheck v1.8.0, Python 3 and

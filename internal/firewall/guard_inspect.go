@@ -82,10 +82,22 @@ func (layout *guardLayout) inspectTable(
 	family string,
 	data []byte,
 ) (*guardTableObservation, error) {
+	return layout.inspectTableGeometry(ctx, family, data, true)
+}
+
+// Revocation must remain possible after exclusion content drifts. The sealing
+// path still requires the exact object/rule schema, but never authorizes traffic.
+func (layout *guardLayout) inspectTableGeometry(
+	ctx context.Context,
+	family string,
+	data []byte,
+	verifyGeometry bool,
+) (*guardTableObservation, error) {
 	schema, err := layout.schema(family)
 	if err != nil {
 		return nil, err
 	}
+	fixedInternetSets := layout.internetPrefixSets()
 	if err := strictjson.Object(data, []string{"nftables"}, nil, maximumOutput); err != nil {
 		return nil, err
 	}
@@ -162,6 +174,11 @@ func (layout *guardLayout) inspectTable(
 			}
 			if uint64(len(set.Elements)) > set.Size {
 				return nil, errors.New("firewall: guarded set capacity exceeded")
+			}
+			if expected, fixed := fixedInternetSets[name]; fixed && verifyGeometry {
+				if err := checkInternetSet(set.Elements, expected); err != nil {
+					return nil, err
+				}
 			}
 			observed.sets[name] = set
 		}

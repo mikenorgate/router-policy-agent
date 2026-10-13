@@ -114,25 +114,27 @@ func TestScopeInternetIsNotInternalGUAOrPrivateAlias(t *testing.T) {
 	for _, protocol := range []string{"tcp", "udp"} {
 		rule.Protocol = protocol
 		candidate := compileScopes(t, baseline, scopeInput(t, rule))
+		compiler := testCompiler(t, baseline)
 		for _, peer := range []string{"9.9.9.9", "1.1.1.1", "2606:4700:4700::1111"} {
-			if !scopePermits(candidate, peer, 443) {
+			if !internetPermits(compiler, candidate, peer, 443) {
 				t.Errorf("missing public %s grant for %s", protocol, peer)
 			}
 		}
 		for _, peer := range []string{"2a01:4f8:100::10", "2a01:4f8:200::22", "10.240.2.20", "192.168.1.1",
 			"100.64.0.1", "192.0.2.1", "198.18.0.1", "2001:db8::1", "3fff::1", "2002:a01:101::1",
 			"fdca:1a2b:2::20", "10.250.0.20", "fdca:1a2b:64::afa:14"} {
-			if scopeRepresents(candidate, peer, 443) {
+			if internetPermits(compiler, candidate, peer, 443) {
 				t.Errorf("Internet admitted internal/special/alias %s", peer)
 			}
 		}
-		if !scopeRepresents(candidate, "64:ff9b::909:909", 443) {
+		if !internetPermits(compiler, candidate, "64:ff9b::909:909", 443) {
 			t.Error("public NAT64 counterpart missing")
 		}
-		if scopePermits(candidate, "9.9.9.9", 53) || scopePermits(candidate, "9.9.9.9", 123) != (protocol == "tcp") {
+		if internetPermits(compiler, candidate, "9.9.9.9", 53) ||
+			internetPermits(compiler, candidate, "9.9.9.9", 123) != (protocol == "tcp") {
 			t.Error("Internet bypassed router-owned DNS/NTP baseline")
 		}
-		if len(candidate.Grants) > 1024 {
+		if len(candidate.Grants) > 3 {
 			t.Fatal("Internet was expanded into hosts or ports")
 		}
 	}

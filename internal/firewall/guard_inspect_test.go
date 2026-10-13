@@ -72,6 +72,9 @@ func guardListingFixture(t testing.TB, populated bool) (*guardLayout, guardListi
 			header["handle"] = handle
 			handle++
 			elements := make([]json.RawMessage, 0)
+			if prefixes, fixed := layout.internetPrefixSets()[name]; fixed {
+				elements = prefixValues(prefixes)
+			}
 			for _, value := range values[objectReference{Family: family, Table: ownedTable, Name: name}] {
 				if name == cohortSet || name == classified4Set || name == classified6Set {
 					elements = append(elements, value)
